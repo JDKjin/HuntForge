@@ -273,6 +273,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--max-time", type=float, default=0, help="总时长上限（秒）")
     parser.add_argument("--poll", type=float, default=0, help="拉题间隔覆盖（秒）")
     parser.add_argument("--verbose", action="store_true", help="debug 日志")
+    parser.add_argument("--live", action="store_true",
+                        help="TSecBench 实盘跑分模式（真实平台 API + 容器生命周期）")
     args = parser.parse_args(argv)
 
     logging.basicConfig(
@@ -283,6 +285,18 @@ def main(argv: list[str] | None = None) -> int:
     cfg = load()
     if os.environ.get("HUNTFORGE_GATEWAY"):
         cfg.llm.setdefault("gateway", {})["enabled"] = True
+
+    if args.live:
+        base = os.environ.get("BENCHMARK_BASE_URL", "")
+        token = os.environ.get("BENCHMARK_TOKEN", "")
+        if not base or not token:
+            print("--live 模式需要环境变量 BENCHMARK_BASE_URL / BENCHMARK_TOKEN")
+            return 1
+        from .bench.live_runner import LiveRunner
+        runner = LiveRunner(base, token, llm_cfg=cfg.llm)
+        summary = runner.run(max_total_time=args.max_time or None)
+        print("LIVE_SUMMARY " + json.dumps(summary, ensure_ascii=False))
+        return 0
 
     summary = run(
         cfg, mock=args.mock,

@@ -1,15 +1,17 @@
-"""Web 综合挖掘 Agent：指纹 → LLM 多轮决策循环 → 专项检查序列 → 7Q Gate → finding/提交。
+"""Web 综合挖掘 Agent：指纹 → LLM 多轮决策循环 / 专项检查序列 → 7Q Gate → finding/提交。
 
 LLM（PentestPlanner）接入主决策链：
   - 首轮 analyze_web_target：分析目标响应，发现隐藏路径和非标准端点
   - 多轮 decide_next_step 循环：基于每次探测结果，LLM 生成下一步指令
     （路径/参数/请求头），agent 执行并反馈结果，直到命中 flag 或轮次耗尽
   - WAF/过滤检测，传递提示给专项检查
-规则引擎作为 fallback（LLM 不可用时自动降级）。
+规则引擎可在 LLM 前或后执行（llm_first 控制）：规则快、LLM 深，
+实盘跑分建议规则先行（llm_first=False），时间富余再让 LLM 探索。
 """
 from __future__ import annotations
 
 import logging
+import re
 import time
 from typing import Callable, Optional
 
@@ -21,8 +23,35 @@ from ..web.gate import evaluate_and_persist
 
 log = logging.getLogger("huntforge.webops")
 
-MAX_LLM_STEPS = 6   # LLM 决策循环最大轮次
-MIN_LLM_TIME = 45   # 剩余时间低于此值不再启动 LLM 循环
+_LINK_RE = re.compile(r"""(?:href|src|action)=["']([^"'#]{1,200})["']""", re.I)
+_FORM_RE = re.compile(r"<form[^>]*>.*?</form>", re.I | re.S)
+_COMMENT_RE = re.compile(r"<!--(.*?)-->", re.S)
+_INPUT_RE = re.compile(r"""<input[^>]*name=["']([^"']{1,60})["'][^>]*>""", re.I)
+
+
+def _page_summary(body: str) -> str:
+    """把页面压缩成 LLM 友好的摘要：开头正文 + 链接 + 表单 + HTML 注释。
+
+    决策循环每步只回灌这个摘要而非原始 body，信息密度远高于裸截断。
+    """
+    if not body:
+        return ""
+    head = body[:400].replace("\n", " ")
+    links = _LINK_RE.findall(body[:20000])[:15]
+    forms: list[str] = []
+    for fm in _FORM_RE.findall(body[:20000])[:3]:
+        m = _LINK_RE.search(fm)
+        inputs = _INPUT_RE.findall(fm)[:8]
+        forms.append(f"form(action={m.group(1) if m else '?'}, inputs={inputs})")
+    comments = [c.strip()[:120] for c in _COMMENT_RE.findall(body[:20000])[:3] if c.strip()]
+    parts = [head]
+    if links:
+        parts.append("links=" + ", ".join(links))
+    if forms:
+        parts.append("forms=" + "; ".join(forms))
+    if comments:
+        parts.append("comments=" + "; ".join(comments))
+    return " | ".join(parts)[:900]
 
 
 class WebOpsAgent:
@@ -30,13 +59,20 @@ class WebOpsAgent:
                  timebox: float = 600.0,
                  submitter: Optional[Callable[[str, str], None]] = None,
                  fingerprint: Optional[Fingerprinter] = None,
-                 planner=None):
+                 planner=None, stop_after_flag: bool = True,
+                 llm_first: bool = True,
+                 max_llm_steps: int = 6,
+                 min_llm_time: float = 45.0):
         self.db = db
         self.http_timeout = http_timeout
         self.timebox = timebox
         self.submitter = submitter
         self.fp = fingerprint or Fingerprinter()
         self.planner = planner
+        self.stop_after_flag = stop_after_flag
+        self.llm_first = llm_first
+        self.max_llm_steps = max_llm_steps
+        self.min_llm_time = min_llm_time
         self._started = 0.0
 
     def run(self, task: dict) -> dict:
@@ -54,10 +90,10 @@ class WebOpsAgent:
         tags, main_resp = self._identify(target, ch["id"])
         self.db.put_memory("fingerprint", target[:120], {"tags": tags}, strength=1.0)
 
-        # 2) LLM 首轮分析（核心：理解系统、发现攻击面）
+        # 2) LLM 首轮分析（单次调用：理解系统、发现攻击面，提示喂给规则检查）
         llm_hints: dict = {}
         llm_used = False
-        if self.planner and main_resp is not None and self._time_left() > MIN_LLM_TIME:
+        if self.planner and main_resp is not None and self._time_left() > self.min_llm_time:
             llm_used = True
             llm_hints = self.planner.analyze_web_target(
                 target,
@@ -74,60 +110,24 @@ class WebOpsAgent:
                 log.info("LLM analysis: hidden_paths=%s waf=%s",
                          llm_hints.get("hidden_paths"), llm_hints.get("waf_detected"))
 
-        # 3) 多轮 LLM 决策循环（核心：分析→指令→执行→反馈→更新策略）
         llm_candidates: list = []
-        llm_steps = 0
-        if (self.planner and hasattr(self.planner, "decide_next_step")
-                and self._time_left() > MIN_LLM_TIME):
-            llm_used = True
-            llm_candidates, llm_steps = self._llm_decision_loop(
-                ch, target, llm_hints,
-            )
-
-        # 4) 构建检查上下文（含 LLM 提示），规则引擎作为补充
-        ctx = {
-            "base": target,
-            "timeout": self.http_timeout,
-            "time_left": self._time_left,
-            # LLM 发现的隐藏路径 → unauth 检查会优先尝试
-            "extra_paths": llm_hints.get("hidden_paths", []),
-            # LLM 发现的非标准登录路径 → sqli 检查会尝试
-            "extra_form_paths": llm_hints.get("extra_form_paths", []),
-            # LLM 发现的可注入参数 → sqli/lfi 优先测这些参数
-            "param_hints": llm_hints.get("injectable_params", []),
-            # WAF 提示 → sqli 切换到绕过 payload
-            "waf_hint": llm_hints.get("waf_detected"),
-        }
-
-        # 5) 专项检查（LLM 优先级 > 指纹优先级），已有 flag 则跳过
         rule_candidates: list = []
-        if not any(c.value for c in llm_candidates):
-            llm_order = llm_hints.get("priority_checks") or []
-            fp_order = self.fp.check_order(tags)
-            # 合并：LLM 优先，指纹顺序补充剩余
-            seen: set = set(llm_order)
-            order = list(llm_order) + [c for c in fp_order if c not in seen]
+        llm_steps = 0
 
-            for check_name in order:
-                if self._time_left() <= 0:
-                    break
-                fn = checks.CHECKS.get(check_name)
-                if not fn:
-                    continue
-                try:
-                    found = fn(ctx)
-                except Exception as exc:  # noqa: BLE001
-                    log.exception("check %s failed", check_name)
-                    self.db.event("task.info", "challenge", ch["id"],
-                                  {"msg": f"check {check_name} error: {exc}"})
-                    continue
-                rule_candidates.extend(found)
-                self.db.event("task.info", "challenge", ch["id"],
-                              {"msg": f"check {check_name} -> {len(found)} candidate(s)"})
-                if any(c.value for c in found):
-                    break  # flag 已到手，停止
+        if self.llm_first:
+            # LLM 多轮决策循环优先；未命中再跑规则检查
+            llm_candidates, llm_steps, loop_ran = self._maybe_llm_loop(ch, target, llm_hints)
+            llm_used = llm_used or loop_ran
+            if not any(c.value for c in llm_candidates):
+                rule_candidates = self._run_rules(ch, target, tags, llm_hints)
+        else:
+            # 规则先行（实盘快赢）；规则无 flag 且时间富余再 LLM 探索
+            rule_candidates = self._run_rules(ch, target, tags, llm_hints)
+            if not any(c.value for c in rule_candidates):
+                llm_candidates, llm_steps, loop_ran = self._maybe_llm_loop(ch, target, llm_hints)
+                llm_used = llm_used or loop_ran
 
-        # 6) 去重 + Gate + 落库 + 提交
+        # 3) 去重 + Gate + 落库 + 提交
         candidates = llm_candidates + rule_candidates
         n_verified, n_flag = self._persist(ch, task["id"], candidates)
         return {
@@ -141,7 +141,59 @@ class WebOpsAgent:
             "flags": n_flag,
         }
 
+    # ---------- 规则检查 ----------
+    def _run_rules(self, ch: dict, target: str, tags: list, llm_hints: dict) -> list:
+        ctx = {
+            "base": target,
+            "timeout": self.http_timeout,
+            "time_left": self._time_left,
+            # LLM 发现的隐藏路径 → unauth 检查会优先尝试
+            "extra_paths": llm_hints.get("hidden_paths", []),
+            # LLM 发现的非标准登录路径 → sqli 检查会尝试
+            "extra_form_paths": llm_hints.get("extra_form_paths", []),
+            # LLM 发现的可注入参数 → sqli/lfi 优先测这些参数
+            "param_hints": llm_hints.get("injectable_params", []),
+            # WAF 提示 → sqli 切换到绕过 payload
+            "waf_hint": llm_hints.get("waf_detected"),
+        }
+        llm_order = llm_hints.get("priority_checks") or []
+        fp_order = self.fp.check_order(tags)
+        # 合并：LLM 优先，指纹顺序补充剩余
+        seen: set = set(llm_order)
+        order = list(llm_order) + [c for c in fp_order if c not in seen]
+
+        out: list = []
+        for check_name in order:
+            if self._time_left() <= 0:
+                break
+            fn = checks.CHECKS.get(check_name)
+            if not fn:
+                continue
+            try:
+                found = fn(ctx)
+            except Exception as exc:  # noqa: BLE001
+                log.exception("check %s failed", check_name)
+                self.db.event("task.info", "challenge", ch["id"],
+                              {"msg": f"check {check_name} error: {exc}"})
+                continue
+            out.extend(found)
+            self.db.event("task.info", "challenge", ch["id"],
+                          {"msg": f"check {check_name} -> {len(found)} candidate(s)"})
+            if any(c.value for c in found):
+                log.info("rules: %s 命中 %d 个候选（含 flag）", check_name, len(found))
+                if self.stop_after_flag:
+                    break  # 单 flag 题目命中即停（多 flag 继续跑其余检查）
+        return out
+
     # ---------- LLM 多轮决策循环 ----------
+    def _maybe_llm_loop(self, ch: dict, base: str, hints: dict) -> tuple:
+        """条件满足时启动决策循环。返回 (candidates, steps, ran)。"""
+        if not (self.planner and hasattr(self.planner, "decide_next_step")
+                and self._time_left() > self.min_llm_time):
+            return [], 0, False
+        candidates, steps = self._llm_decision_loop(ch, base, hints)
+        return candidates, steps, True
+
     def _llm_decision_loop(self, ch: dict, base: str, hints: dict) -> tuple:
         """LLM 驱动的多轮探测：分析历史响应 → 生成下一步 → 执行 → 反馈。
 
@@ -153,17 +205,19 @@ class WebOpsAgent:
         seq = 0
         got_flag = False
         seen_urls: set = set()   # (action, path, params, data) 去重，防 LLM 空转
-        for step in range(MAX_LLM_STEPS):
+        for step in range(self.max_llm_steps):
             if self._time_left() <= 0 or got_flag:
                 break
             decision = self.planner.decide_next_step(base, history, hints)
             if not decision:
                 break
             action = decision.get("next_action", "stop")
+            reason = str(decision.get("reason", ""))[:100]
+            log.info("llm-step %d: action=%s path=%s reason=%s",
+                     step, action, decision.get("path"), reason)
             if action == "stop":
                 self.db.event("llm.web_step", "challenge", ch["id"],
-                              {"step": step, "action": "stop",
-                               "reason": str(decision.get("reason", ""))[:120]})
+                              {"step": step, "action": "stop", "reason": reason})
                 break
             if action == "flag":
                 value = decision.get("flag_candidate")
@@ -208,12 +262,13 @@ class WebOpsAgent:
             history.append({
                 "seq": seq, "method": action.upper(), "path": path,
                 "status": status,
-                "snippet": body[:300],
+                "snippet": _page_summary(body),   # 链接/表单/注释摘要，而非裸截断
             })
             self.db.event("llm.web_step", "challenge", ch["id"],
                           {"step": step, "action": action, "path": path,
-                           "status": status, "flag": bool(flag),
-                           "reason": str(decision.get("reason", ""))[:120]})
+                           "status": status, "flag": bool(flag), "reason": reason})
+            log.info("llm-step %d: %s %s -> http %s flag=%s",
+                     step, action.upper(), path, status, bool(flag))
             if flag:
                 candidates.append(Candidate(
                     type="llm_discovered", url=url,

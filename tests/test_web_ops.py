@@ -24,6 +24,22 @@ class FakePlanner:
         }
 
 
+def test_page_summary_extracts_links_forms_comments():
+    from huntforge.agents.web_ops import _page_summary
+    html = (
+        '<html><body>welcome to the portal'
+        '<a href="/admin/panel">admin</a><a href="/api/v1/users">api</a>'
+        '<form method=post action="/login"><input name="user"><input name="pass"></form>'
+        '<!-- TODO: remove debug endpoint /debug -->'
+        '</body></html>'
+    )
+    s = _page_summary(html)
+    assert "/admin/panel" in s and "/api/v1/users" in s
+    assert "form(action=/login" in s and "user" in s
+    assert "/debug" in s
+    assert len(s) <= 900
+
+
 def test_web_ops_uses_llm_hints(db, mb):
     from huntforge.agents.web_ops import WebOpsAgent
 
