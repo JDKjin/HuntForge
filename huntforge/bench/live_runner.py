@@ -21,6 +21,13 @@ from .tsec_client import (ChallengeNotFound, DuplicateSubmit, InvalidState,
 log = logging.getLogger("huntforge.live")
 
 DIFF_RANK = {"easy": 0, "medium": 1, "hard": 2}
+# 深攻阶段的解出概率先验（用于期望值排序：分数 × 概率）
+DIFF_PROB = {"easy": 0.30, "medium": 0.15, "hard": 0.05}
+
+
+def expected_value(ch: dict) -> float:
+    score = ch.get("total_score") or 0
+    return score * DIFF_PROB.get(ch.get("difficulty", ""), 0.1)
 
 # 每类题目的 Agent 尝试链（依次执行，时间盒内全部跑完）
 AGENT_CHAIN = {
@@ -62,6 +69,7 @@ class LiveRunner:
         self.submitted: set[tuple[str, str]] = set()   # (unique_code, flag) 幂等去重
         self.scores: dict[str, int] = {}               # unique_code -> cumulative_score
         self._active: list[str] = []                   # 本 runner 启动且未关闭的题
+        self._attempt_counts: dict[str, int] = {}      # 每题跨阶段累计尝试次数
 
     def _build_planner(self, llm_cfg):
         if not llm_cfg:
@@ -82,15 +90,16 @@ class LiveRunner:
         deadline = time.time() + max_total_time if max_total_time else None
         # 阶段 1：纯规则快扫 easy 题（不花 LLM token，限时防止挤占深攻预算）
         self._pass(deadline, per_challenge=75.0, use_llm=False,
-                   label="pass1 规则快扫(easy)", only_easy=True, max_pass_time=1200.0)
-        # 阶段 2：规则 + LLM 深攻剩余未解题（按分值从高到低）
+                   label="pass1 规则快扫(easy)", only_easy=True,
+                   max_pass_time=1200.0, max_attempts=1)
+        # 阶段 2：规则 + LLM 深攻剩余未解题（按分值从高到低，每阶段最多攻 2 次）
         self._pass(deadline, per_challenge=self.per_challenge_timebox,
-                   use_llm=True, label="pass2 LLM 深攻")
+                   use_llm=True, label="pass2 LLM 深攻", max_attempts=2)
         return self._summary(self.client.list_challenges())
 
     def _pass(self, deadline: Optional[float], *, per_challenge: float,
               use_llm: bool, label: str, only_easy: bool = False,
-              max_pass_time: Optional[float] = None) -> None:
+              max_pass_time: Optional[float] = None, max_attempts: int = 1) -> None:
         log.info("---------- %s 开始（每题 ≤%ss, LLM=%s） ----------",
                  label, per_challenge, use_llm)
         pass_started = time.time()
@@ -108,13 +117,21 @@ class LiveRunner:
             if not pending:
                 log.info("%s: 无待处理题目", label)
                 return
-            order = sorted(pending,
-                           key=lambda c: (DIFF_RANK.get(c.get("difficulty", ""), 1),
-                                          -(c.get("total_score") or 0)))
+            if use_llm:
+                # 深攻按期望值排序：分数 × 难度先验（b-01/b-03 这类 1200 分题优先于一切 easy）
+                order = sorted(pending, key=lambda c: -expected_value(c))
+            else:
+                order = sorted(pending,
+                               key=lambda c: (DIFF_RANK.get(c.get("difficulty", ""), 1),
+                                              -(c.get("total_score") or 0)))
             progress = False
             for ch in order:
                 if deadline is not None and time.time() > deadline:
                     return
+                n = self._attempt_counts.get(ch["unique_code"], 0)
+                if n >= max_attempts:
+                    continue
+                self._attempt_counts[ch["unique_code"]] = n + 1
                 try:
                     completed = self._solve_one(ch, deadline, per_challenge, use_llm)
                     progress = True
