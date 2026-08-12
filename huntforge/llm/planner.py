@@ -290,13 +290,16 @@ class PentestPlanner:
 
 基于已有响应（状态码差异、正文特征、错误信息），选择最有可能成功的一步。
 输出 JSON：
-- next_action: "get"（GET请求）/ "post"（POST请求）/ "flag"（已确定flag）/ "stop"（无更多有效步骤）
+- next_action: "get"（GET请求）/ "post"（POST请求）/ "script"（写一段 python3 脚本一次完成多步探测，stdout 会回传）/ "flag"（已确定flag）/ "stop"（无更多有效步骤）
 - path: 请求路径（相对路径，以 / 开头）
 - params: GET 查询参数 dict（无则空）
 - data: POST body dict（无则空）
 - headers: 附加请求头 dict（如认证头，无则空）
+- script: 若 next_action 为 script，给出完整 python3 脚本（可用 requests；目标地址在环境变量 TARGET；脚本在受限沙箱执行，只允许访问目标网段；把找到的关键结果 print 出来，含 flag）
 - reason: 这一步的理由，60字内
 - flag_candidate: 若 next_action 为 flag，给出完整 flag 字符串；否则 null
+
+script 动作适用场景：需要多步尝试（爆破路径/遍历参数/登录+二次请求）时，优先用 script 一次完成，而不是多轮 get/post。
 
 要求：
 - 基于证据推理，不重复已尝试且失败的路径
@@ -314,12 +317,15 @@ class PentestPlanner:
         if not isinstance(data, dict):
             return {"next_action": "stop", "reason": "invalid LLM output"}
         action = data.get("next_action")
-        if action not in ("get", "post", "flag", "stop"):
+        if action not in ("get", "post", "script", "flag", "stop"):
             action = "stop"
         path = _safe_single_path(data.get("path"))
         params = _safe_kv(data.get("params"), limit=6)
         body = _safe_kv(data.get("data"), limit=6)
         headers = _safe_kv(data.get("headers"), limit=6)
+        script = _clip(data.get("script"), 4000) if action == "script" else ""
+        if action == "script" and not script:
+            action = "stop"
         reason = _clip(data.get("reason"), 120)
         flag_candidate = extract_flag(_clip(data.get("flag_candidate"), 200)) or None
         # 语义修正：flag 无候选 / 探测无路径 → 降级 stop，避免空转
@@ -333,6 +339,7 @@ class PentestPlanner:
             "params": params,
             "data": body,
             "headers": headers,
+            "script": script,
             "reason": reason,
             "flag_candidate": flag_candidate,
         }

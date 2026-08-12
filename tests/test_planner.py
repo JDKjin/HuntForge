@@ -39,6 +39,27 @@ def test_ai_planner_caps_payload_count():
     assert len(out["strategy"]) <= 220
 
 
+def test_step_planner_accepts_script_action():
+    planner = PentestPlanner(DummyGW({
+        "next_action": "script",
+        "script": "import requests\nprint(requests.get('http://x').text[:100])",
+        "reason": "多步探测",
+        "flag_candidate": None,
+    }))
+    out = planner.decide_next_step("http://x", [], None)
+    assert out["next_action"] == "script"
+    assert "import requests" in out["script"]
+    # 空脚本 → 降级 stop
+    out2 = planner.decide_next_step("http://x", [], None)
+    out3 = PentestPlanner(DummyGW({"next_action": "script", "script": ""})).decide_next_step(
+        "http://x", [], None)
+    assert out3["next_action"] == "stop"
+    # 非法动作 → stop
+    out4 = PentestPlanner(DummyGW({"next_action": "rm -rf"})).decide_next_step(
+        "http://x", [], None)
+    assert out4["next_action"] == "stop"
+
+
 def test_binary_and_contract_planner_shapes():
     planner = PentestPlanner(DummyGW({
         "flag_found": "flag{binary}",
