@@ -62,7 +62,8 @@ class WebOpsAgent:
                  planner=None, stop_after_flag: bool = True,
                  llm_first: bool = True,
                  max_llm_steps: int = 6,
-                 min_llm_time: float = 45.0):
+                 min_llm_time: float = 45.0,
+                 rules_max_seconds: Optional[float] = None):
         self.db = db
         self.http_timeout = http_timeout
         self.timebox = timebox
@@ -73,6 +74,8 @@ class WebOpsAgent:
         self.llm_first = llm_first
         self.max_llm_steps = max_llm_steps
         self.min_llm_time = min_llm_time
+        # 规则检查的时间上限（None=不限）：实盘规则先跑时防止规则吃光预算饿死 LLM 循环
+        self.rules_max_seconds = rules_max_seconds
         self._started = 0.0
 
     def run(self, task: dict) -> dict:
@@ -143,10 +146,17 @@ class WebOpsAgent:
 
     # ---------- 规则检查 ----------
     def _run_rules(self, ch: dict, target: str, tags: list, llm_hints: dict) -> list:
+        # 规则阶段独立时间上限：到点即收，把时间留给 LLM 循环
+        rules_deadline = (time.time() + self.rules_max_seconds
+                          if self.rules_max_seconds else None)
+        if rules_deadline:
+            time_left = lambda: min(self._time_left(), rules_deadline - time.time())  # noqa: E731
+        else:
+            time_left = self._time_left
         ctx = {
             "base": target,
             "timeout": self.http_timeout,
-            "time_left": self._time_left,
+            "time_left": time_left,
             # LLM 发现的隐藏路径 → unauth 检查会优先尝试
             "extra_paths": llm_hints.get("hidden_paths", []),
             # LLM 发现的非标准登录路径 → sqli 检查会尝试
@@ -164,7 +174,7 @@ class WebOpsAgent:
 
         out: list = []
         for check_name in order:
-            if self._time_left() <= 0:
+            if time_left() <= 0:
                 break
             fn = checks.CHECKS.get(check_name)
             if not fn:

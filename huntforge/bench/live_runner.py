@@ -364,7 +364,9 @@ class LiveRunner:
                                planner=planner,
                                stop_after_flag=(flag_count <= 1),
                                # 实盘：规则快赢优先，LLM 探索殿后；步数收窄省时间
-                               llm_first=False, max_llm_steps=4, min_llm_time=20)
+                               llm_first=False, max_llm_steps=4, min_llm_time=20,
+                               # 规则阶段最多占 45% 时间，其余保证留给 LLM 循环
+                               rules_max_seconds=timebox * 0.45)
         if agent_type == "ai-ops":
             return AIOpsAgent(**kwargs)
         if agent_type == "binary-ops":
