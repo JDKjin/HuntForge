@@ -147,10 +147,26 @@ def _unwrap_list(body: Any) -> list:
 def _classify_submit(status_code: int, body: dict) -> str:
     """提交结果分类：accepted / rejected / unknown。
 
-    - 2xx：平台成功语义，一律 accepted（错误答案平台一般返回非 2xx 或拒绝码）
+    - 响应体中的显式状态字段优先：部分平台即使答错也返回 HTTP 200，
+      必须看 body 里的 status/ok 字段，否则会把 rejected 误判为 accepted 而停止挖掘
+    - 2xx 且无显式状态：accepted
     - 明确的 4xx（参数错/未授权/频率限制）：rejected（频率限制本可重试，但保守不刷）
     - 其余（网络超时、5xx）：unknown → 可安全重试（平台侧幂等去重，重复提交无害）
     """
+    if isinstance(body, dict):
+        for key in ("status", "result", "verdict"):
+            value = body.get(key)
+            if isinstance(value, str):
+                value = value.strip().lower()
+                if value in ("accepted", "ok", "success", "correct", "true"):
+                    return "accepted"
+                if value in ("rejected", "wrong", "incorrect", "failed", "false") \
+                        and status_code < 500:
+                    return "rejected"
+        for key in ("ok", "success"):
+            value = body.get(key)
+            if isinstance(value, bool):
+                return "accepted" if value else "rejected"
     if status_code in (200, 201):
         return "accepted"
     if status_code in (400, 401, 403, 404, 429):
