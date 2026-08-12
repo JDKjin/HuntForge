@@ -1,7 +1,7 @@
 """二进制分析 agent 测试（strings/魔数/危险函数）。"""
 import pytest
 
-from huntforge.bench.mock_server import MockBench
+from huntforge.bench.mock_server import FLAGS, MockBench
 from huntforge.agents.binary_ops import _extract_strings, _identify_format
 
 
@@ -15,12 +15,21 @@ def mb():
 
 class FakePlanner:
     def audit_binary(self, fmt, strings, dangerous):
+        """模拟 LLM：识别 XOR 编码线索并"解码"（返回正确 flag）。"""
+        if any("KEY=0x41" in s for s in strings):
+            return {
+                "flag_found": None,
+                "encoded_hint": "xor key 0x41",
+                "decoded_flag": FLAGS["xor-demo"],
+                "vuln_path": "xor 解码 strings 尾部密文",
+                "exploit_hint": "decode with key",
+            }
         return {
-            "flag_found": None,
-            "encoded_hint": "xor",
-            "decoded_flag": "flag{binary_strings_reveal_secret}",
+            "flag_found": FLAGS["binary-demo"],
+            "encoded_hint": None,
+            "decoded_flag": None,
             "vuln_path": "strings lead to secret",
-            "exploit_hint": "decode",
+            "exploit_hint": "direct",
         }
 
 
@@ -58,4 +67,30 @@ def test_agent_finds_flag_in_elf(mb):
     r = agent.run({"id": 1, "challenge_id": "binary-demo", "agent_type": "binary-ops"})
     assert r["outcome"] == "flag_found"
     assert submitted[0][1] == FLAGS["binary-demo"]
+    db.close()
+
+
+def test_planner_path_decodes_xor_flag(mb):
+    """XOR 编码 ELF：规则层 strings 找不到明文 flag → planner 审计被真实调用并解码。"""
+    from huntforge.bench.mock_server import FLAGS
+    from huntforge.core.state import StateDB
+    from huntforge.agents.binary_ops import BinaryOpsAgent
+    from pathlib import Path
+    import tempfile, os
+    db = StateDB(os.path.join(tempfile.mkdtemp(), "t.db"))
+    elf_path = Path("data/mock/xor_target.elf").resolve()
+    assert elf_path.is_file(), "xor mock 文件未生成"
+    # 明文 flag 不应出现在 strings 里（否则测试无意义）
+    from huntforge.agents.binary_ops import _extract_strings
+    assert not any("flag{" in s for s in _extract_strings(elf_path.read_bytes()))
+    db.upsert_challenge({"id": "xor-demo", "title": "x", "category": "binary",
+                         "difficulty": "medium", "target": str(elf_path)})
+    submitted = []
+    agent = BinaryOpsAgent(db, timebox=60,
+                           submitter=lambda c, v: submitted.append((c, v)),
+                           planner=FakePlanner())
+    r = agent.run({"id": 1, "challenge_id": "xor-demo", "agent_type": "binary-ops"})
+    assert r["llm_used"] is True, "规则层无明文 flag，必须走 planner 审计"
+    assert r["outcome"] == "flag_found"
+    assert submitted and submitted[0][1] == FLAGS["xor-demo"]
     db.close()

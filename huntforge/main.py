@@ -70,6 +70,10 @@ def make_handler(db: StateDB, cfg, submissions: SubmissionManager):
         log.info("LLM planner unavailable — rules-only mode")
 
     def handler(task: dict) -> dict:
+        if planner is not None:
+            # 任务级 usage 计量（尽力而为：并发 worker 共享 gateway 时可能串号，
+            # 精确归属需把 task_id 穿透到每次 planner 调用）
+            planner.gw.task_id = task.get("id")
         agent_type = task["agent_type"]
         timeout = float(agent_cfg.get("timeout_seconds", 600))
         http_t = float(agent_cfg.get("http_timeout", 10))

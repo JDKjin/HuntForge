@@ -1,7 +1,7 @@
 # HuntForge 自审计报告（宣称 vs 实际）
 
 > 借鉴 CTF-Hunter 链路审计方法论：README/文档宣称的能力逐条对照代码验证。
-> 审计日期：2026-08-13（P6 文档同步阶段）
+> 审计日期：2026-08-13（真实模型验证阶段）
 
 ## 一、宣称 vs 实际对照表
 
@@ -21,7 +21,7 @@
 | 全程事件溯源 | `core/state.py:event` + e2e 断言 | ✅ 通过（8 类事件全链路） |
 | 量化报表 | `report.py` | ✅ 实现（依赖真实运行数据） |
 | Web 控制台 | `webui/app.py` | ✅ 实现（本地验证） |
-| LLM 规划接入 | `llm/planner.py` + `agents/*` | ✅ 通过（默认降级，启用后参与决策；web 多轮决策循环 ≤6 轮、AI 多轮反馈 ≤3 轮，fake-planner 测试覆盖） |
+| LLM 规划接入 | `llm/planner.py` + `agents/*` | ✅ 通过（默认降级，启用后参与决策；web 多轮决策循环 ≤6 轮、AI 多轮反馈 ≤3 轮，fake-planner 测试覆盖；真实 deepseek-v4-flash 端到端验证 7/7） |
 
 ## 二、开发过程中发现并修复的真实缺陷（记录）
 
@@ -37,10 +37,11 @@
 | 8 | LLM usage 不落库 | 真实模型调用 | ModelGateway 持有 db 并记录 usage |
 | 9 | hosted 模式缺 BENCHMARK_BASE_URL 静默回退 mock | 托管运行 | 改为 fail-closed，只有 `--mock` 才启动本地 mock |
 | 10 | LLM 结果未做边界约束 | planner 输出 | planner 归一化并限制路径/参数/检查项 |
+| 11 | 推理模型把 max_tokens 耗在 reasoning 上返回空 content（实测 deepseek-v4-flash 约 1/3 概率） | 真实模型调用 | 网关翻倍 max_tokens 自动重试；每次尝试都计量 |
 
 ## 三、已知限制（诚实声明）
 
-1. **真实 LLM 调用仍依赖平台 key**：代码已接入白名单网关、usage 计量与 budget；但真实输出表现取决于平台注入的国内模型 key 和网络状态。多轮决策循环与反馈迭代的 prompt 同样尚未对真实模型端到端验证（本地仅 fake-planner 测试）。
+1. **真实比赛靶场的 LLM 表现未验证**：已用真实 deepseek-v4-flash key 在本地 mock 靶场完成端到端验证（7/7 全解、14 次调用、多轮决策循环真实运转）；但真实比赛靶场难度更高，LLM 在陌生系统上的探索能力仍待实战检验。托管环境还需验证平台注入的 key 与 `.tsecbench.gw` 网关链路。
 2. **SSRF 检查仅回显型**：盲 SSRF（DNS 回调）需要外部回调服务器，托管沙箱无公网，P1 实现只测回显特征。
 3. **二进制动态分析未接入**：gdb/fuzz 逻辑设计了工具探测，但本地 Windows 无 gcc 工具链，动态链路未实测（静态链路已验证）。
 4. **漏洞链模板有限**：当前只有 SQLi→会话→管理页一种链；13 类链模板（VulHunter 思路）未全部移植。

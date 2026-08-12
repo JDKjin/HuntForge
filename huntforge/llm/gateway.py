@@ -110,38 +110,46 @@ class ModelGateway:
 
     def _call_one(self, model: dict, messages: list[dict],
                   max_tokens: int | None, tier: str) -> dict:
+        """单模型调用。推理模型偶发把 max_tokens 全耗在 reasoning 上导致 content 为空，
+        此时翻倍 max_tokens 重试一次（实测 deepseek-v4-flash 约 1/3 概率触发）。"""
         url = f"{model['base_url']}/chat/completions"
-        payload: dict[str, Any] = {
-            "model": model["id"],
-            "messages": messages,
-            "temperature": self._chat_cfg.get("temperature", 0.2),
-            "max_tokens": max_tokens or self._chat_cfg.get("max_tokens", 2048),
-            "stream": False,
-        }
-        started = time.time()
-        try:
-            resp = requests.post(
-                url,
-                json=payload,
-                headers={"Authorization": f"Bearer {model['api_key']}"},
-                timeout=self._chat_cfg.get("timeout", 60),
-            )
-        except requests.RequestException as exc:
-            raise LLMError(f"network: {exc}") from exc
-        latency_ms = int((time.time() - started) * 1000)
-        if resp.status_code != 200:
-            raise LLMError(f"http {resp.status_code}: {resp.text[:200]}")
-        try:
-            body = resp.json()
-        except ValueError as exc:
-            raise LLMError(f"bad json: {resp.text[:200]}") from exc
-        try:
-            text = body["choices"][0]["message"]["content"] or ""
-            usage = body.get("usage") or {}
-        except (KeyError, IndexError) as exc:
-            raise LLMError(f"unexpected shape: {str(body)[:200]}") from exc
-        self._record_usage(model, tier=tier, usage=usage, latency_ms=latency_ms)
-        return {"text": text, "model": model["id"], "usage": usage}
+        token_budget = max_tokens or self._chat_cfg.get("max_tokens", 2048)
+        for _attempt in range(2):
+            payload: dict[str, Any] = {
+                "model": model["id"],
+                "messages": messages,
+                "temperature": self._chat_cfg.get("temperature", 0.2),
+                "max_tokens": token_budget,
+                "stream": False,
+            }
+            started = time.time()
+            try:
+                resp = requests.post(
+                    url,
+                    json=payload,
+                    headers={"Authorization": f"Bearer {model['api_key']}"},
+                    timeout=self._chat_cfg.get("timeout", 60),
+                )
+            except requests.RequestException as exc:
+                raise LLMError(f"network: {exc}") from exc
+            latency_ms = int((time.time() - started) * 1000)
+            if resp.status_code != 200:
+                raise LLMError(f"http {resp.status_code}: {resp.text[:200]}")
+            try:
+                body = resp.json()
+            except ValueError as exc:
+                raise LLMError(f"bad json: {resp.text[:200]}") from exc
+            try:
+                text = body["choices"][0]["message"]["content"] or ""
+                usage = body.get("usage") or {}
+            except (KeyError, IndexError) as exc:
+                raise LLMError(f"unexpected shape: {str(body)[:200]}") from exc
+            # 每次 HTTP 200 都计量（重试的消耗也要入账）
+            self._record_usage(model, tier=tier, usage=usage, latency_ms=latency_ms)
+            if text.strip():
+                return {"text": text, "model": model["id"], "usage": usage}
+            token_budget *= 2
+        raise LLMError("empty content after retry (reasoning overflow?)")
 
     def _record_usage(self, model: dict, tier: str, usage: dict, latency_ms: int) -> None:
         if not self.db:

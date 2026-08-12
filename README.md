@@ -41,7 +41,13 @@ python -m pytest tests/ -q
 #    BENCHMARK_BASE_URL / BENCHMARK_TOKEN 由平台自动注入，无需手动配置
 python -m huntforge.main
 
-# 4) 单独起 mock 平台+靶场（供调试）
+# 4) 真实模型全链路评测（本地直连国内模型，验证 LLM 决策链真实运转）
+DEEPSEEK_API_KEY=sk-xxx python -m huntforge.main --mock
+
+# 5) planner prompt dry-run（用真实 key 逐个验证 4 类 prompt 的输出质量）
+DEEPSEEK_API_KEY=sk-xxx python scripts/planner_dryrun.py --steps 3
+
+# 6) 单独起 mock 平台+靶场（供调试）
 python -m huntforge.bench.mock_server
 ```
 
@@ -72,7 +78,7 @@ huntforge/
 ├── llm/planner.py     渗透规划器（多轮决策 decide_next_step + 归一化清洗层）
 └── agents/            web-ops（决策循环）/ ai-ops（多轮反馈）/ binary / chain / probe
 config/                settings.yaml（运行时）+ llm.yaml（模型）
-tests/                 63 个测试（含 LLM 决策循环与端到端 mock 评测）
+tests/                 67 个测试（含 LLM 决策循环与端到端 mock 评测）
 ```
 
 ## 安全与合规
@@ -112,5 +118,8 @@ tests/                 63 个测试（含 LLM 决策循环与端到端 mock 评�
 - **AI 多轮反馈**：`generate_ai_payloads(recon_log, prev_attempts)` 把上一轮 payload/回复/结果反馈给 LLM（≤3 轮 × ≤4 条载荷），迭代绕过防御
 - **二进制审计 / 合约语义审计**：静态分析结果交给 LLM 深度解读（deep/standard tier）
 - 所有 LLM 输出经归一化清洗层（白名单/限长/防注入），非法输出强制降级为规则链路
+- 推理模型偶发把 max_tokens 耗在 reasoning 上返回空 content → 网关自动翻倍重试，每次消耗都计量
+
+**真实模型验证（deepseek-v4-flash）**：本地直连真实 key 全链路评测 **7/7 全解**（81.2s），14 次真实 LLM 调用（7184 in / 8977 out tokens）全程写入 `model_usage`；事件溯源可见 LLM 多轮推理式探测（SQLi 认证绕过尝试 → Cookie 探 /flag → Werkzeug 控制台探测 → 规则链兜底）。
 
 **比赛提交物**（`docs/`）：技术方案文档（架构/方法/实验/创新点）+ 自审计报告（宣称 vs 实际 + 10 个真实缺陷记录）+ 量化报表（`huntforge/report.py` 自动生成六项指标）。

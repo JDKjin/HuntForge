@@ -14,21 +14,21 @@ gateway:
 # 每个 tier 首个模型为主，后续为 failover 备用。
 tiers:
   fast:
-    - id: deepseek-chat
+    - id: deepseek-v4-flash
       base_url: https://api.deepseek.com/v1
       api_key_env: DEEPSEEK_API_KEY
     - id: glm-4-flash
       base_url: https://open.bigmodel.cn/api/paas/v4
       api_key_env: ZHIPU_API_KEY
   standard:
-    - id: deepseek-chat
+    - id: deepseek-v4-flash
       base_url: https://api.deepseek.com/v1
       api_key_env: DEEPSEEK_API_KEY
     - id: glm-4-flash
       base_url: https://open.bigmodel.cn/api/paas/v4
       api_key_env: ZHIPU_API_KEY
   deep:
-    - id: deepseek-reasoner
+    - id: deepseek-v4-flash
       base_url: https://api.deepseek.com/v1
       api_key_env: DEEPSEEK_API_KEY
     - id: glm-4-plus

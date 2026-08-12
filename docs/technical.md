@@ -77,12 +77,14 @@ HuntForge（铸猎）是一个面向 SRC 定向漏洞挖掘与二进制漏洞自
 
 评测环境：7 个靶场覆盖四类（Web×4 / AI×1 / 二进制×1 / 区块链×1），本地 mock 模式稳定全解 7/7；在未配置网关或 key 时自动降级为纯规则链路，配置白名单模型后可启用 LLM 规划与审计增强。
 
+**真实模型验证（deepseek-v4-flash 真实 key，本地直连）**：全链路评测 7/7 全解（81.2s），14 次真实 LLM 调用（7184 in / 8977 out / 512 cache tokens）全程写入 `model_usage`。事件溯源可见 LLM 真实参与决策：SQLi 题 LLM 多轮推理式尝试（登录注入 → Cookie 探 /flag → Werkzeug 控制台探测）、unauth 题 LLM 发现 /flag 路径、AI 题多轮反馈后载荷升级为 base64 编码变体。推理模型偶发把 max_tokens 耗尽在 reasoning 上返回空 content（实测约 1/3 概率），网关自动翻倍 max_tokens 重试解决。
+
 | 指标 | HuntForge | 传统人工（基线估计） |
 |---|---|---|
 | 漏洞发现率 | 7/7（100%） | 4-5/7 |
 | 误报提交 | 0（Gate 拦截 100% 无意义发现） | 常有无效提交 |
-| 单题平均时长 | ~1.6s（含提交） | 10-30 min |
-| 大模型成本 | mock 评测默认 0 次调用；启用网关后写入 `model_usage` | N/A |
+| 单题平均时长 | 纯规则 ~1.6s；真实 LLM 全链路 ~11.6s/题 | 10-30 min |
+| 大模型成本 | 纯规则 0 次调用；真实 LLM 全链路 14 次调用 / 16.2K tokens，写入 `model_usage` | N/A |
 | 人机验证比例 | 0%（全自动） | 60-80% |
 
 事件溯源完整记录全流程：`system.start → challenges.fetched → task.created → finding.added → gate.verified → submission.queued → submission.accepted → system.end`，托管模式全程审计即天然 Demo。

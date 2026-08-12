@@ -78,6 +78,44 @@ def test_usage_recorded(monkeypatch, db):
     assert usage["cache_t"] == 1
 
 
+def test_empty_content_retry(monkeypatch, db):
+    """推理模型偶发把 max_tokens 耗在 reasoning 上返回空 content —— 应翻倍重试且都计量。"""
+    from huntforge.llm.gateway import ModelGateway
+
+    monkeypatch.setenv("K1", "sk-1")
+    gw = ModelGateway({
+        "gateway": {"enabled": False},
+        "tiers": {"fast": [{"id": "m-fast", "base_url": "http://x", "api_key_env": "K1"}]},
+        "chat": {"timeout": 1},
+    }, db=db)
+
+    calls = {"n": 0, "max_tokens_seen": []}
+
+    class Resp:
+        status_code = 200
+
+        def __init__(self, content):
+            self._content = content
+
+        def json(self):
+            return {
+                "choices": [{"message": {"content": self._content}}],
+                "usage": {"prompt_tokens": 1, "completion_tokens": 1},
+            }
+
+    def fake_post(url, *a, **k):
+        calls["n"] += 1
+        calls["max_tokens_seen"].append(k["json"]["max_tokens"])
+        return Resp("" if calls["n"] == 1 else '{"ok": true}')
+
+    monkeypatch.setattr("huntforge.llm.gateway.requests.post", fake_post)
+    out = gw.chat_json([{"role": "user", "content": "hi"}], tier="fast")
+    assert out == {"ok": True}
+    assert calls["n"] == 2
+    assert calls["max_tokens_seen"] == [2048, 4096]
+    assert db.usage_summary()["calls"] == 2  # 重试消耗也入账
+
+
 def test_call_budget_exhausted(monkeypatch):
     from huntforge.llm.gateway import ModelGateway, LLMError
 
