@@ -13,6 +13,17 @@ def mb():
     m.stop()
 
 
+class FakePlanner:
+    def audit_binary(self, fmt, strings, dangerous):
+        return {
+            "flag_found": None,
+            "encoded_hint": "xor",
+            "decoded_flag": "flag{binary_strings_reveal_secret}",
+            "vuln_path": "strings lead to secret",
+            "exploit_hint": "decode",
+        }
+
+
 def test_identify_formats():
     assert _identify_format(b"\x7fELF\x02") == "elf"
     assert _identify_format(b"MZ\x90\x00") == "pe"
@@ -42,7 +53,8 @@ def test_agent_finds_flag_in_elf(mb):
                          "difficulty": "medium", "target": str(elf_path)})
     submitted = []
     agent = BinaryOpsAgent(db, timebox=60,
-                           submitter=lambda c, v: submitted.append((c, v)))
+                           submitter=lambda c, v: submitted.append((c, v)),
+                           planner=FakePlanner())
     r = agent.run({"id": 1, "challenge_id": "binary-demo", "agent_type": "binary-ops"})
     assert r["outcome"] == "flag_found"
     assert submitted[0][1] == FLAGS["binary-demo"]

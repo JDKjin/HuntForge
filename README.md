@@ -14,8 +14,8 @@
 └─────┬─────────┬─────────────┘
       │         │
 ┌─────▼────┐ ┌──▼────────────┐
-│ Web 流水线 │ │ 专项流水线（规划中）│   P1 SQLi/SSRF/RCE/越权 · P2 AI 应用
-│ recon→指纹 │ │  P3 二进制   │     P4 区块链
+│ Web 流水线 │ │ 专项流水线（web/ai/binary/chain）│   P1 SQLi/SSRF/RCE/越权 · P2 AI 应用
+│ recon→指纹 │ │  LLM 规划 + 规则 fallback │     P3 二进制 · P4 区块链
 └─────┬────┘ └──┬────────────┘
 ┌─────▼────────▼─────────────┐
 │ 模型网关（白名单国内模型）      │   tier 路由 fast/standard/deep · failover
@@ -31,7 +31,7 @@
 ```bash
 pip install -r requirements.txt
 
-# 1) 本地 mock 评测（内置平台 + 4 个漏洞靶场，无需任何外部服务）
+# 1) 本地 mock 评测（内置平台 + 7 个漏洞靶场，无需任何外部服务）
 python -m huntforge.main --mock
 
 # 2) 跑测试
@@ -63,7 +63,7 @@ huntforge/
 ├── bench/
 │   ├── client.py      BenchClient 平台适配层（字段名宽容归一化）
 │   ├── submission.py  幂等提交管理器（去重/冷却/状态机）
-│   └── mock_server.py 本地 mock 平台 + 4 个漏洞靶场
+│   └── mock_server.py 本地 mock 平台 + 7 个漏洞靶场
 ├── core/
 │   ├── state.py       SQLite 唯一事实源（challenges/tasks/findings/submissions/events/model_usage/memory）
 │   ├── scheduler.py   规则调度器（CAS 领取 + lease 续租 + 过期回收）
@@ -71,7 +71,7 @@ huntforge/
 ├── llm/gateway.py     模型网关（OpenAI 兼容 + 网关转换 + tier 路由 + token 计量）
 └── agents/probe.py    P0 探测 Agent（HTTP 探活 + 路径枚举 + flag 正则）
 config/                settings.yaml（运行时）+ llm.yaml（模型）
-tests/                 28 个测试（含端到端 mock 评测）
+tests/                 58 个测试（含端到端 mock 评测）
 ```
 
 ## 安全与合规
@@ -88,10 +88,11 @@ tests/                 28 个测试（含端到端 mock 评测）
 - [x] P3 二进制漏洞挖掘（魔数/strings/危险函数 + LLM 审计增强）
 - [x] P4 区块链漏洞挖掘（Solidity 规则扫描：重入/tx.origin/溢出/权限）
 - [x] P5 展示与提交物（Web 控制台 + 量化报表 + Dockerfile + 技术文档 + 自审计）
+- [x] P6 说明文档同步（README/技术方案/自审计与当前实现一致）
 
-## 当前状态（P1-P5 全部完成）
+## 当前状态（实现与文档已同步）
 
-本地 mock 评测：**7/7 题全解，11 秒**，零 LLM 调用（纯规则引擎），零误报提交：
+本地 mock 评测：**7/7 题全解**，规则链路可独立运行；LLM 现在已接入规划链，但默认在无 key/无网关时自动降级到规则引擎：
 
 | 类别 | 题目 | 漏洞 | 挖掘路径 |
 |---|---|---|---|
@@ -99,10 +100,12 @@ tests/                 28 个测试（含端到端 mock 评测）
 | Web | unauth-demo | 鉴权头绕过 | web-ops unauth → X-Admin 头 |
 | Web | sqli-demo | SQL 注入登录绕过 | web-ops sqli → **会话跟随 → 管理页 flag（漏洞链）** |
 | Web | lfi-demo | 路径遍历 | web-ops lfi → ../ 读 flag.txt |
-| AI | ai-demo | 提示词注入 | ai-ops 210 条知识库 → 首条 payload 命中即停 |
-| 二进制 | binary-demo | 字符串泄露 | binary-ops strings 提取 |
-| 区块链 | chain-demo | 合约重入 | chain-ops 规则扫描 + 源码 flag |
+| AI | ai-demo | 提示词注入 | ai-ops 侦察 → LLM 规划 → 210 条知识库 fallback |
+| 二进制 | binary-demo | 字符串泄露 | binary-ops strings 提取 + LLM 审计增强 |
+| 区块链 | chain-demo | 合约重入 | chain-ops 规则扫描 + LLM 语义审计 |
 
 **阶段序列**：`probe（路径枚举）→ 专项 ops（web/ai/binary/chain）→ idle`。
 
-**比赛提交物**（`docs/`）：技术方案文档（架构/方法/实验/创新点）+ 自审计报告（宣称 vs 实际 + 7 个真实缺陷记录）+ 量化报表（`huntforge/report.py` 自动生成六项指标）。
+**LLM 说明**：模型网关默认关闭；配置 `HUNTFORGE_GATEWAY=1` 且提供国内模型 key 后，LLM 参与 Web 规划、AI payload 生成、二进制审计和合约语义审计，并通过 `model_usage` 记录成本。
+
+**比赛提交物**（`docs/`）：技术方案文档（架构/方法/实验/创新点）+ 自审计报告（宣称 vs 实际 + 10 个真实缺陷记录）+ 量化报表（`huntforge/report.py` 自动生成六项指标）。

@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Callable, Optional
 
 from ..core.state import StateDB
-from ..web.common import FLAG_RE, extract_flag
+from ..web.common import extract_flag
 from ..web.gate import evaluate_and_persist
 
 log = logging.getLogger("huntforge.binary")
@@ -41,11 +41,12 @@ HEURISTICS: list[tuple[str, str, str]] = [
 class BinaryOpsAgent:
     def __init__(self, db: StateDB, timebox: float = 600.0,
                  submitter: Optional[Callable[[str, str], None]] = None,
-                 gateway=None):
+                 gateway=None, planner=None):
         self.db = db
         self.timebox = timebox
         self.submitter = submitter
-        self.gateway = gateway  # ModelGateway（可选，LLM 审计用）
+        self.gateway = gateway   # 旧接口保留兼容
+        self.planner = planner   # 新：PentestPlanner（主路径）
         self._started = 0.0
 
     def run(self, task: dict) -> dict:
@@ -64,16 +65,62 @@ class BinaryOpsAgent:
                 return {"ok": True, "outcome": "acquire_failed"}
             info = self._analyze(Path(path))
             candidates = self._heuristic_candidates(info, ch["id"])
+
+            # LLM 深度审计：无论规则是否命中，都尝试（主路径）
+            planner = self.planner
+            if planner and self._time_left() > 10 and not any(c.get("value") for c in candidates):
+                llm_result = planner.audit_binary(
+                    info.get("format", "unknown"),
+                    info.get("strings", []),
+                    info.get("dangerous", []),
+                )
+                candidates.extend(self._process_llm_result(llm_result))
+                if llm_result:
+                    self.db.event("llm.binary_audit", "challenge", ch["id"],
+                                  {"flag_found": llm_result.get("flag_found"),
+                                   "encoded": llm_result.get("encoded_hint")})
+
             findings = self._persist(ch, task["id"], candidates)
-            llm_note = ""
-            if self.gateway and not findings["flags"]:
-                llm_note = self._llm_audit(Path(path), info, ch["id"], task["id"])
-            return {"ok": True, "outcome": "flag_found" if findings["flags"] else "analyzed",
-                    "format": info.get("format"), "strings_found": len(info.get("strings", [])),
-                    "dangerous": info.get("dangerous", []), "llm_audit": llm_note,
-                    **findings}
+            return {
+                "ok": True,
+                "outcome": "flag_found" if findings["flags"] else "analyzed",
+                "format": info.get("format"),
+                "strings_found": len(info.get("strings", [])),
+                "dangerous": info.get("dangerous", []),
+                "llm_used": bool(planner),
+                **findings,
+            }
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
+
+    def _process_llm_result(self, result: dict) -> list[dict]:
+        """把 LLM 审计结果转换为 finding candidates。"""
+        if not result:
+            return []
+        out: list[dict] = []
+        # 1) LLM 直接给出 flag
+        flag = result.get("flag_found") or result.get("decoded_flag")
+        flag_value = extract_flag(flag or "")
+        if flag_value:
+            out.append({
+                "type": "flag_llm_decoded", "confidence": 0.90,
+                "request": "LLM binary audit",
+                "response": flag,
+                "impact": "LLM 从字符串中识别/解码出 flag",
+                "value": flag_value,
+                "confirm": {"note": result.get("encoded_hint", "direct")},
+            })
+        # 2) LLM 给出漏洞路径
+        hint = result.get("exploit_hint") or result.get("vuln_path", "")
+        if hint:
+            out.append({
+                "type": "binary_vuln_path", "confidence": 0.5,
+                "request": "LLM static audit",
+                "response": hint[:400],
+                "impact": hint[:200],
+                "confirm": {"note": "LLM 深度分析"},
+            })
+        return out
 
     # ---------- 获取目标 ----------
     def _acquire(self, target: str, tmp: str) -> Optional[str]:
@@ -142,38 +189,14 @@ class BinaryOpsAgent:
                     break
         return out
 
-    # ---------- LLM 审计（可选） ----------
-    def _llm_audit(self, path: Path, info: dict, challenge_id: str,
-                   task_id: int) -> str:
-        try:
-            ctx = ("你是一名二进制安全审计专家。以下是目标文件的静态分析信息：\n"
-                   f"格式: {info.get('format')}\n大小: {info.get('size')} 字节\n"
-                   f"危险函数: {info.get('dangerous')}\n"
-                   f"前 200 条字符串: {info.get('strings', [])[:200]}\n"
-                   "请识别潜在漏洞（缓冲区溢出/命令注入/逻辑漏洞），输出 JSON："
-                   '{"vulns":[{"type":"...","location":"...","analysis":"...","exploitability":"..."}]}')
-            resp = self.gateway.chat_json([{"role": "user", "content": ctx}],
-                                          tier="deep")
-            vulns = resp.get("vulns", [])
-            for v in vulns[:3]:
-                self.db.add_finding(
-                    challenge_id, task_id, "llm:" + str(v.get("type", "unknown"))[:40],
-                    0.5,
-                    {"url": str(path), "request": "LLM 静态审计",
-                     "response": str(v.get("analysis", ""))[:400],
-                     "impact": str(v.get("exploitability", "需人工确认")),
-                     "confirm": {"note": "LLM 审计（deep tier）"}},
-                )
-                self.db.event("finding.llm", "challenge", challenge_id,
-                              {"type": v.get("type"), "note": "llm audit"})
-            return f"llm:{len(vulns)}"
-        except Exception as exc:  # noqa: BLE001 - LLM 不可用静默降级
-            log.info("llm audit unavailable: %s", exc)
-            return "llm:unavailable"
-
     def _persist(self, ch: dict, task_id: int, candidates: list[dict]) -> dict:
         n_verified = n_flag = 0
+        seen: set[tuple[str, str]] = set()
         for c in candidates:
+            key = (c["type"], str(c.get("value") or c.get("response", ""))[:120])
+            if key in seen:
+                continue
+            seen.add(key)
             fid = self.db.add_finding(
                 ch["id"], task_id, c["type"], c["confidence"],
                 {k: v for k, v in c.items() if k != "value"},

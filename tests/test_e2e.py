@@ -8,25 +8,19 @@ import pytest
 
 @pytest.fixture(scope="module")
 def result(tmp_path_factory):
-    from huntforge.bench.mock_server import MockBench
     from huntforge.core.config import Config
     from huntforge.core.state import StateDB
     from huntforge.main import run
 
-    mb = MockBench()
-    mb.start()
-    try:
-        cfg = Config()
-        cfg.data.setdefault("paths", {})["db"] = str(tmp_path_factory.mktemp("e2e") / "e2e.db")
-        summary = run(cfg, mock=False, max_rounds=4, poll_interval=0.1)
-        db_path = cfg.data["paths"]["db"]
-        db = StateDB(db_path)
-        events = db.list_events(limit=500)
-        subs = db.list_submissions()
-        db.close()
-        return summary, events, subs
-    finally:
-        mb.stop()
+    cfg = Config()
+    cfg.data.setdefault("paths", {})["db"] = str(tmp_path_factory.mktemp("e2e") / "e2e.db")
+    summary = run(cfg, mock=True, max_rounds=4, poll_interval=0.1)
+    db_path = cfg.data["paths"]["db"]
+    db = StateDB(db_path)
+    events = db.list_events(limit=500)
+    subs = db.list_submissions()
+    db.close()
+    return summary, events, subs
 
 
 def test_all_mock_challenges_solved(result):

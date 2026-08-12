@@ -47,11 +47,12 @@ ARITH = re.compile(r"\+\s*=|-\s*=|\*\s*=|/=", re.I)
 class BlockchainOpsAgent:
     def __init__(self, db: StateDB, timebox: float = 300.0,
                  submitter: Optional[Callable[[str, str], None]] = None,
-                 gateway=None):
+                 gateway=None, planner=None):
         self.db = db
         self.timebox = timebox
         self.submitter = submitter
         self.gateway = gateway
+        self.planner = planner
         self._started = 0.0
 
     def run(self, task: dict) -> dict:
@@ -66,10 +67,12 @@ class BlockchainOpsAgent:
             src = self._acquire(target, tmp)
             if src is None:
                 return {"ok": True, "outcome": "acquire_failed"}
+
             matches = self._scan(src)
             candidates = []
-            # 源码内 flag 直接搜索（合约注释/硬编码常含敏感值）
             from ..web.common import extract_flag
+
+            # 1) 源码直接搜索 flag（规则层）
             flag = extract_flag(src)
             if flag:
                 candidates.append({
@@ -80,6 +83,8 @@ class BlockchainOpsAgent:
                     "value": flag,
                     "confirm": {"note": "源码文本命中"},
                 })
+
+            # 2) 规则扫描漏洞
             for pattern, vuln, impact, conf in matches:
                 candidates.append({
                     "type": vuln, "confidence": conf,
@@ -88,11 +93,46 @@ class BlockchainOpsAgent:
                     "impact": impact,
                     "confirm": {"note": "规则命中（规则库内置）"},
                 })
+
+            # 3) LLM 语义审计（主路径，规则找不到 flag 时必走）
+            if self.planner and not flag and self._time_left() > 5:
+                llm_result = self.planner.audit_contract(src)
+                if llm_result:
+                    self.db.event("llm.contract_audit", "challenge", ch["id"],
+                                  {"flag_found": llm_result.get("flag_in_source"),
+                                   "vulns": len(llm_result.get("critical_vulns", []))})
+                    # LLM 在源码中找到 flag
+                    llm_flag = llm_result.get("flag_in_source")
+                    flag_value = extract_flag(llm_flag or "")
+                    if flag_value:
+                        candidates.append({
+                            "type": "flag_llm_found", "confidence": 0.90,
+                            "request": "LLM 合约语义审计",
+                            "response": llm_flag,
+                            "impact": "LLM 在合约中识别出 flag",
+                            "value": flag_value,
+                            "confirm": {"note": "LLM 深度语义分析"},
+                        })
+                    # LLM 找到漏洞利用路径
+                    for vuln in llm_result.get("critical_vulns", [])[:3]:
+                        candidates.append({
+                            "type": "contract_" + str(vuln.get("type", "vuln"))[:30],
+                            "confidence": 0.7,
+                            "request": "LLM 合约审计",
+                            "response": str(vuln.get("description", ""))[:400],
+                            "impact": f"LLM 识别漏洞: {vuln.get('type', '未知')}: {vuln.get('location', '')}",
+                            "confirm": {"note": llm_result.get("flag_access_path", "")[:100]},
+                        })
+
             findings = self._persist(ch, task["id"], candidates)
-            return {"ok": True, "outcome": "analyzed", "matches": len(matches),
-                    **findings}
+            return {
+                "ok": True,
+                "outcome": "analyzed",
+                "matches": len(matches),
+                "llm_used": bool(self.planner),
+                **findings,
+            }
         finally:
-            import shutil
             shutil.rmtree(tmp, ignore_errors=True)
 
     def _acquire(self, target: str, tmp: str) -> Optional[str]:

@@ -4,6 +4,16 @@ import pytest
 from huntforge.agents.blockchain_ops import BlockchainOpsAgent
 
 
+class FakePlanner:
+    def audit_contract(self, source):
+        return {
+            "flag_in_source": "flag{solidity_reentrancy_vulnerability}",
+            "critical_vulns": [{"type": "reentrancy", "location": "withdraw", "description": "x"}],
+            "flag_access_path": "call secret",
+            "required_calls": ["deposit(1)", "secret()"],
+        }
+
+
 def _src():
     from pathlib import Path
     return Path("data/mock/vault.sol").read_text(encoding="utf-8")
@@ -35,7 +45,8 @@ def test_flag_in_source(db):
                          "target": str(Path("data/mock/vault.sol").resolve())})
     submitted = []
     agent = BlockchainOpsAgent(db, timebox=60,
-                               submitter=lambda c, v: submitted.append((c, v)))
+                               submitter=lambda c, v: submitted.append((c, v)),
+                               planner=FakePlanner())
     r = agent.run({"id": 1, "challenge_id": "chain-demo", "agent_type": "chain-ops"})
     assert r["flags"] >= 1
     assert submitted[0][1] == FLAGS["chain-demo"]

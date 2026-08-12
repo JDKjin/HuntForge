@@ -30,7 +30,9 @@ BYPASS_HEADERS = [
 def run(ctx) -> list[Candidate]:
     out: list[Candidate] = []
     base = ctx["base"].rstrip("/")
-    for path in PATHS:
+    # LLM 发现的隐藏路径优先，其次是内置路径（去重保顺序）
+    all_paths = list(dict.fromkeys(ctx.get("extra_paths", []) + PATHS))
+    for path in all_paths:
         if ctx["time_left"]() <= 0:
             break
         resp = get(base + path, ctx["timeout"])

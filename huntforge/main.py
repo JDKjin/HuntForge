@@ -28,6 +28,20 @@ from .core.state import StateDB
 
 log = logging.getLogger("huntforge")
 
+
+def _make_planner(cfg, db: StateDB):
+    """从配置创建 PentestPlanner，LLM 不可用时返回 None。"""
+    try:
+        from .llm.gateway import ModelGateway
+        from .llm.planner import PentestPlanner
+        gw = ModelGateway(cfg.llm, db=db)
+        # 检查是否有可用模型（至少一个 tier 有 key）
+        if gw.supports("fast"):
+            return PentestPlanner(gw)
+    except Exception as exc:  # noqa: BLE001
+        log.info("planner unavailable, using rules only: %s", exc)
+    return None
+
 # category → agent 阶段序列（依次尝试，直到解出或挂起）
 CATEGORY_STAGES = {
     "web": ["probe", "web-ops"],
@@ -46,44 +60,44 @@ AGENT_TYPES = {a for stages in CATEGORY_STAGES.values() for a in stages}
 
 
 def make_handler(db: StateDB, cfg, submissions: SubmissionManager):
-    """task.agent_type → 执行体。"""
+    """task.agent_type → 执行体。planner 传给所有 agent。"""
     agent_cfg = cfg.agent
     submitter = lambda cid, v: submissions.queue(cid, v)  # noqa: E731
+    planner = _make_planner(cfg, db)
+    if planner:
+        log.info("LLM planner enabled (tier=fast available)")
+    else:
+        log.info("LLM planner unavailable — rules-only mode")
 
     def handler(task: dict) -> dict:
         agent_type = task["agent_type"]
+        timeout = float(agent_cfg.get("timeout_seconds", 600))
+        http_t = float(agent_cfg.get("http_timeout", 10))
         if agent_type == "probe":
             return ProbeAgent(
-                db,
-                http_timeout=float(agent_cfg.get("http_timeout", 10)),
+                db, http_timeout=http_t,
                 timebox=float(agent_cfg.get("timeout_seconds", 300)),
                 submitter=submitter,
             ).run(task)
         if agent_type == "web-ops":
             return WebOpsAgent(
-                db,
-                http_timeout=float(agent_cfg.get("http_timeout", 10)),
-                timebox=float(agent_cfg.get("timeout_seconds", 600)),
-                submitter=submitter,
+                db, http_timeout=http_t, timebox=timeout,
+                submitter=submitter, planner=planner,
             ).run(task)
         if agent_type == "ai-ops":
             return AIOpsAgent(
-                db,
-                http_timeout=float(agent_cfg.get("http_timeout", 10)),
-                timebox=float(agent_cfg.get("timeout_seconds", 600)),
-                submitter=submitter,
+                db, http_timeout=http_t, timebox=timeout,
+                submitter=submitter, planner=planner,
             ).run(task)
         if agent_type == "binary-ops":
             from .agents.binary_ops import BinaryOpsAgent
             return BinaryOpsAgent(
-                db, timebox=float(agent_cfg.get("timeout_seconds", 600)),
-                submitter=submitter,
+                db, timebox=timeout, submitter=submitter, planner=planner,
             ).run(task)
         if agent_type == "chain-ops":
             from .agents.blockchain_ops import BlockchainOpsAgent
             return BlockchainOpsAgent(
-                db, timebox=float(agent_cfg.get("timeout_seconds", 600)),
-                submitter=submitter,
+                db, timebox=timeout, submitter=submitter, planner=planner,
             ).run(task)
         log.warning("unknown agent_type %s, using probe", agent_type)
         return ProbeAgent(db, submitter=submitter).run(task)
@@ -142,7 +156,7 @@ def run(cfg, *, mock: bool = False, max_rounds: int | None = None,
     mock_bench = None
     if not bench.configured:
         if not mock:
-            log.warning("BENCHMARK_BASE_URL 未配置且未指定 --mock，尝试内置 mock")
+            raise RuntimeError("BENCHMARK_BASE_URL 未配置；托管模式必须显式注入平台环境变量或使用 --mock")
         mock_bench = MockBench()
         mock_bench.start()
         bench = BenchClient(mock_bench.base_url, None)

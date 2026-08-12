@@ -49,6 +49,49 @@ def test_no_key_raises(monkeypatch):
         gw.chat([{"role": "user", "content": "hi"}])
 
 
+def test_usage_recorded(monkeypatch, db):
+    from huntforge.llm.gateway import ModelGateway
+
+    monkeypatch.setenv("K1", "sk-1")
+    gw = ModelGateway({
+        "gateway": {"enabled": False},
+        "tiers": {"fast": [{"id": "m-fast", "base_url": "http://x", "api_key_env": "K1"}]},
+        "chat": {"timeout": 1},
+    }, db=db, task_id=7)
+
+    class Resp:
+        status_code = 200
+
+        def json(self):
+            return {
+                "choices": [{"message": {"content": "{\"ok\": true}"}}],
+                "usage": {"prompt_tokens": 3, "completion_tokens": 4, "prompt_tokens_details": {"cached_tokens": 1}},
+            }
+
+    monkeypatch.setattr("huntforge.llm.gateway.requests.post", lambda *a, **k: Resp())
+    out = gw.chat_json([{"role": "user", "content": "hi"}], tier="fast")
+    assert out == {"ok": True}
+    usage = db.usage_summary()
+    assert usage["calls"] == 1
+    assert usage["in_t"] == 3
+    assert usage["out_t"] == 4
+    assert usage["cache_t"] == 1
+
+
+def test_call_budget_exhausted(monkeypatch):
+    from huntforge.llm.gateway import ModelGateway, LLMError
+
+    monkeypatch.setenv("K1", "sk-1")
+    gw = ModelGateway({
+        "gateway": {"enabled": False},
+        "per_challenge_call_budget": 0,
+        "tiers": {"fast": [{"id": "m-fast", "base_url": "http://x", "api_key_env": "K1"}]},
+        "chat": {"timeout": 1},
+    })
+    with pytest.raises(LLMError):
+        gw.chat([{"role": "user", "content": "hi"}], tier="fast")
+
+
 def test_extract_json():
     from huntforge.llm.gateway import _extract_json
     assert _extract_json('{"a": 1}') == {"a": 1}

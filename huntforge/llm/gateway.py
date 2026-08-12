@@ -40,7 +40,13 @@ class ModelGateway:
         self._suffix = (llm_cfg.get("gateway") or {}).get("suffix", ".tsecbench.gw")
         self._force_http = bool((llm_cfg.get("gateway") or {}).get("force_http", True))
         self._chat_cfg = llm_cfg.get("chat") or {}
-        self.call_budget = int(os.environ.get("HUNTFORGE_LLM_CALL_BUDGET", "0")) or None
+        budget = os.environ.get("HUNTFORGE_LLM_CALL_BUDGET")
+        if budget in (None, ""):
+            budget = llm_cfg.get("per_challenge_call_budget")
+        try:
+            self.call_budget = int(budget) if budget not in (None, "") else None
+        except (TypeError, ValueError):
+            self.call_budget = None
 
     # ---------- URL 转换 ----------
     def _rewrite_url(self, url: str) -> str:
@@ -79,6 +85,9 @@ class ModelGateway:
                 return t
         return ""
 
+    def supports(self, tier: str = "standard") -> bool:
+        return bool(self._available_tier(tier))
+
     # ---------- 调用 ----------
     def chat(self, messages: list[dict], tier: str = "standard",
              max_tokens: int | None = None) -> dict:
@@ -86,10 +95,15 @@ class ModelGateway:
         tier = self._available_tier(tier)
         if not tier:
             raise NoModelConfigured("no LLM api key configured (env HUNTFORGE_GATEWAY/keys)")
+        if self.call_budget is not None and self.call_budget <= 0:
+            raise LLMError("LLM call budget exhausted")
         errors: list[str] = []
         for model in self._tier_models(tier):
             try:
-                return self._call_one(model, messages, max_tokens, tier)
+                result = self._call_one(model, messages, max_tokens, tier)
+                if self.call_budget is not None:
+                    self.call_budget -= 1
+                return result
             except LLMError as exc:
                 errors.append(f"{model['id']}: {exc}")
         raise LLMError("all models failed; " + "; ".join(errors))
