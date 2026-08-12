@@ -48,16 +48,28 @@ def _run_script(code: str, base: str, timeout: float = 25.0) -> str:
     """在受限沙箱执行 LLM 生成的 python 脚本（仅允许访问靶场网段），返回 stdout。
 
     TARGET 环境变量 = 目标 base URL。脚本把结果 print 出来即可回灌给 LLM。
+    脚本内未捕获的异常会被捕获并打印，让 LLM 下一步能自我修复。
     """
+    wrapper = (
+        "import sys, traceback\n"
+        "try:\n"
+        "    exec(compile({code!r}, '<llm-script>', 'exec'), globals())\n"
+        "except SystemExit:\n"
+        "    pass\n"
+        "except Exception:\n"
+        "    print('[SCRIPT EXCEPTION]', traceback.format_exc(limit=2))\n"
+    ).format(code=code)
     try:
         r = subprocess.run(
-            [sys.executable, "-c", _SCRIPT_GUARD + code],
+            [sys.executable, "-c", _SCRIPT_GUARD + wrapper],
             capture_output=True, text=True, timeout=timeout,
             env={**os.environ, "TARGET": base, "PYTHONIOENCODING": "utf-8"},
         )
         out = (r.stdout or "")[:2000]
         if r.stderr:
             out += "\n[stderr] " + r.stderr[:400]
+        if not out.strip():
+            out = "[script produced no output]"
         return out
     except subprocess.TimeoutExpired:
         return "[script timeout]"
@@ -262,6 +274,30 @@ class WebOpsAgent:
             log.info("llm-step %d: action=%s path=%s reason=%s",
                      step, action, decision.get("path"), reason)
             if action == "stop":
+                if not history:
+                    # 空转保护：历史为空不许停，强制先探测首页再让 LLM 重新决策
+                    log.info("llm-step %d: 空历史 stop，强制 GET / 后继续", step)
+                    resp = get(base, self.http_timeout)
+                    body = body_of(resp)
+                    status = resp.status_code if resp is not None else 0
+                    seq += 1
+                    flag = extract_flag(body)
+                    history.append({"seq": seq, "method": "GET", "path": "/",
+                                    "status": status, "snippet": _page_summary(body)})
+                    self.db.event("llm.web_step", "challenge", ch["id"],
+                                  {"step": step, "action": "forced-get",
+                                   "path": "/", "status": status,
+                                   "flag": bool(flag), "reason": "空历史 stop 兜底"})
+                    if flag:
+                        candidates.append(Candidate(
+                            type="llm_discovered", url=base,
+                            request="GET /", response=body[:400],
+                            impact="首页直接泄露 flag",
+                            confidence=0.95, value=flag,
+                            confirm={"note": "兜底探测命中"})
+                        )
+                        got_flag = True
+                    continue
                 self.db.event("llm.web_step", "challenge", ch["id"],
                               {"step": step, "action": "stop", "reason": reason})
                 break
