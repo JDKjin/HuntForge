@@ -1,0 +1,46 @@
+# HuntForge 运行时配置（环境变量 HUNTFORGE_* 可覆盖）
+# 平台答题 API 说明：托管模式下平台注入 BENCHMARK_BASE_URL / BENCHMARK_TOKEN 两个环境变量，
+# 本地模式（mock）下可留空，程序自动回退到内置 mock 平台。
+
+platform:
+  # 接口路径（拿到比赛 API 文档后按需修改）
+  list_challenges_path: /api/v1/assets
+  submit_path: /api/v1/flag/collect
+  # 提交请求体字段名（flag 值字段）
+  submit_value_field: flag
+  # 拉题间隔（秒）
+  poll_interval: 5
+  # 单轮最大重试
+  max_retries: 3
+
+scheduler:
+  # 并行 worker 数（8核16G 预算内，建议 2-3）
+  workers: 3
+  # 任务租约时长（秒），过期可被回收
+  lease_seconds: 300
+  # 任务最大尝试次数
+  max_attempts: 3
+  # 失败重试退避（秒）
+  retry_backoff: 30
+
+submission:
+  # 递增冷却序列（秒），attempts 越多冷却越长
+  cooldowns: [0, 30, 120, 300, 600]
+  # 最大提交尝试次数（超过转 unknown 挂起）
+  max_attempts: 5
+
+agent:
+  # 单任务时间盒（秒）
+  timeout_seconds: 300
+  # HTTP 请求超时（秒）
+  http_timeout: 10
+  # 用户代理
+  user_agent: "Mozilla/5.0 (HuntForge/0.1)"
+
+paths:
+  # SQLite 状态库位置（空 = 自动取 data/huntforge.db）
+  db: ""
+
+llm:
+  # 单题 LLM 预算上限（次调用），超预算纯规则
+  per_challenge_call_budget: 40

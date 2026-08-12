@@ -1,0 +1,46 @@
+# HuntForge 自审计报告（宣称 vs 实际）
+
+> 借鉴 CTF-Hunter 链路审计方法论：README/文档宣称的能力逐条对照代码验证。
+> 审计日期：2026-08-12（P5 阶段）
+
+## 一、宣称 vs 实际对照表
+
+| 宣称能力 | 代码位置 | 实际状态 |
+|---|---|---|
+| 幂等提交（去重/冷却/unknown 重试上限） | `bench/submission.py` + `tests/test_submission.py` | ✅ 通过（3 个专项测试） |
+| CAS 任务领取 + lease 过期回收 | `core/state.py:claim_task` + `tests/test_scheduler.py` | ✅ 通过（并发 10 任务无重复） |
+| 崩溃恢复（启动回滚遗留任务） | `core/state.py:recover_interrupted` + e2e | ✅ 通过 |
+| 平台换题自动复位重测 | `core/state.py:upsert_challenge` | ✅ 通过（target 变化 → 清任务重跑） |
+| 7Q Gate 证据门禁 | `web/gate.py` + `tests/test_gate.py` | ✅ 通过（6 个专项测试） |
+| Web 五类专项检查 | `web/checks/*.py` + `tests/test_checks.py` | ✅ 通过（4 靶场命中测试） |
+| 会话跟随漏洞链 | `web/common.py:follow_session` + sqli 检查 | ✅ 通过（sqli-demo 链式解出） |
+| AI 210 条知识库 | `knowledge/`（移植自 lingops） | ✅ 210 条（59+36+33+51+31），每条含 payload |
+| 二进制 strings/魔数/危险函数 | `agents/binary_ops.py` + `tests/test_binary_ops.py` | ✅ 通过 |
+| 区块链规则扫描 | `agents/blockchain_ops.py` + `tests/test_chain_ops.py` | ✅ 通过 |
+| 模型网关 URL 转换/failover/计量 | `llm/gateway.py` + `tests/test_gateway.py` | ✅ 通过（URL 转换与降级单测） |
+| 全程事件溯源 | `core/state.py:event` + e2e 断言 | ✅ 通过（8 类事件全链路） |
+| 量化报表 | `report.py` | ✅ 实现（依赖真实运行数据） |
+| Web 控制台 | `webui/app.py` | ✅ 实现（本地验证） |
+
+## 二、开发过程中发现并修复的真实缺陷（记录）
+
+| # | 缺陷 | 触发场景 | 修复 |
+|---|---|---|---|
+| 1 | tasks 表缺 priority 列导致建表失败 | 首次建库 | 补列 + create_task 传参 |
+| 2 | 残留 DB 复用 → 启动即"全部完成" | 二次运行同目录 | upsert 只复位 target 变化的题 |
+| 3 | idle 复位 → 每轮重派死循环 | 上一条修复引入 | 终态保持，仅换题复位 |
+| 4 | Gate 证据缺 request → 全 killed | ai-ops 落库 | 补全证据（url/request/impact） |
+| 5 | SQLi 命中无 flag（缺链） | sqli-demo | 会话提取 + follow_session |
+| 6 | AI 命中后 56 次重复提交同 flag | ai-demo | 命中 flag 即停全部探测 |
+| 7 | 提交重试上限差 1（attempts 时序） | unknown 重试测试 | mark 后 attempts+1 判断 |
+
+## 三、已知限制（诚实声明）
+
+1. **LLM 链路未端到端验证**：模型网关的实网调用依赖白名单 API key，本地 mock 无法验证真实模型输出；代码路径有单测覆盖（URL 转换/降级/JSON 提取），但未用真实 key 跑通。
+2. **SSRF 检查仅回显型**：盲 SSRF（DNS 回调）需要外部回调服务器，托管沙箱无公网，P1 实现只测回显特征。
+3. **二进制动态分析未接入**：gdb/fuzz 逻辑设计了工具探测，但本地 Windows 无 gcc 工具链，动态链路未实测（静态链路已验证）。
+4. **漏洞链模板有限**：当前只有 SQLi→会话→管理页一种链；13 类链模板（VulHunter 思路）未全部移植。
+
+## 四、结论
+
+主链路（平台握手 → 调度 → 四类流水线 → 门禁 → 幂等提交 → 报表）全部有代码 + 测试双重验证；6 类真实缺陷已在开发期修复并记录；剩余风险集中在"真实 LLM 调用"与"动态二进制分析"两端，属环境受限，非设计缺陷。

