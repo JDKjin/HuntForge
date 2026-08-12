@@ -62,12 +62,14 @@ def _run_script(code: str, base: str, timeout: float = 25.0) -> str:
     try:
         r = subprocess.run(
             [sys.executable, "-c", _SCRIPT_GUARD + wrapper],
-            capture_output=True, text=True, timeout=timeout,
-            env={**os.environ, "TARGET": base, "PYTHONIOENCODING": "utf-8"},
+            capture_output=True, timeout=timeout,
+            env={**os.environ, "TARGET": base, "PYTHONIOENCODING": "utf-8",
+                 "PYTHONUTF8": "1"},
         )
-        out = (r.stdout or "")[:2000]
+        # 注意：不用 text=True——Windows 上默认 GBK 解码子进程 UTF-8 输出会崩掉 reader 线程
+        out = (r.stdout or b"").decode("utf-8", "replace")[:2000]
         if r.stderr:
-            out += "\n[stderr] " + r.stderr[:400]
+            out += "\n[stderr] " + r.stderr.decode("utf-8", "replace")[:400]
         if not out.strip():
             out = "[script produced no output]"
         return out
