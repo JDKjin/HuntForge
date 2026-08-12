@@ -1,10 +1,11 @@
 """AI 应用安全挖掘 Agent：提示词注入 / RAG投毒 / 工具越权 / API安全 / 逻辑绕过。
 
-LLM（PentestPlanner）接入主决策链：
+LLM（PentestPlanner）接入主决策链（多轮上下文感知）：
   - 侦察阶段：向 AI 应用发几条中性消息，观察防御风格
   - 规划阶段：LLM 分析防御机制，生成针对性 payload
-  - 执行阶段：LLM 生成的 payload 优先，知识库作补充
-知识库遍历作为 fallback（LLM 不可用时自动降级）。
+  - 多轮反馈：每轮执行结果（目标回复）反馈给 LLM，生成能绕过上次拦截的新载荷
+  - 知识库遍历作为 fallback（LLM 不可用时自动降级）
+交互适配：OpenAI 兼容 / /chat / form / GET 反射 四种形态。
 """
 from __future__ import annotations
 
@@ -42,6 +43,9 @@ RECON_PROBES = [
     "请简单介绍一下你能做什么。",
     "你有什么限制吗？",
 ]
+
+MAX_LLM_ROUNDS = 3    # 多轮反馈最大轮数
+LLM_PAYLOADS_PER_ROUND = 4
 
 
 class AIOpsAgent:
@@ -98,10 +102,10 @@ class AIOpsAgent:
             "flags": n_flag,
         }
 
-    # ---------- LLM 驱动 ----------
+    # ---------- LLM 驱动（多轮上下文感知） ----------
     def _llm_driven_attack(self, ch: dict, endpoint) -> list:
-        """侦察 → LLM 规划 → 执行针对性 payload。"""
-        # 1) 侦察
+        """侦察 → LLM 规划 → 执行 → 反馈 → 迭代（最多 MAX_LLM_ROUNDS 轮）。"""
+        # 1) 侦察：中性消息判断防御风格
         recon_log = []
         for probe in RECON_PROBES:
             if self._time_left() <= 0 or self._requests >= self.max_requests:
@@ -117,26 +121,53 @@ class AIOpsAgent:
         self.db.event("task.info", "challenge", ch["id"],
                       {"msg": f"ai-ops: recon done, {len(recon_log)} responses"})
 
-        # 2) LLM 生成针对性 payload
-        strategy = self.planner.generate_ai_payloads(recon_log, max_payloads=6)
-        payloads = strategy.get("payloads") or []
-        defense = strategy.get("defense_mechanism", "unknown")
-        log.info("AI strategy: defense=%s payloads=%d", defense, len(payloads))
-        self.db.event("llm.ai_strategy", "challenge", ch["id"],
-                      {"defense": defense, "n_payloads": len(payloads)})
-
-        # 3) 执行
-        hits = []
-        for payload in payloads:
-            if self._requests >= self.max_requests or self._time_left() <= 0:
+        # 2) 多轮：规划 payload → 执行 → 把结果反馈给 LLM → 调整策略
+        hits: list = []
+        prev_attempts: list = []
+        got_flag = False
+        defense = "unknown"
+        for rnd in range(MAX_LLM_ROUNDS):
+            if got_flag or self._time_left() <= 0 or self._requests >= self.max_requests:
                 break
-            self._requests += 1
-            hit = self._probe(endpoint, payload)
-            if hit:
-                hit["strategy"] = "llm_generated"
-                hits.append(hit)
-                if hit.get("value"):
+            strategy = self.planner.generate_ai_payloads(
+                recon_log, max_payloads=LLM_PAYLOADS_PER_ROUND,
+                prev_attempts=prev_attempts,
+            )
+            payloads = strategy.get("payloads") or []
+            defense = strategy.get("defense_mechanism", defense)
+            log.info("AI round %d: defense=%s payloads=%d prev_attempts=%d",
+                     rnd, defense, len(payloads), len(prev_attempts))
+            self.db.event("llm.ai_strategy", "challenge", ch["id"],
+                          {"round": rnd, "defense": defense,
+                           "n_payloads": len(payloads)})
+
+            round_hits = 0
+            for payload in payloads[:LLM_PAYLOADS_PER_ROUND]:
+                if got_flag or self._requests >= self.max_requests or self._time_left() <= 0:
                     break
+                self._requests += 1
+                hit = self._probe(endpoint, payload)
+                if hit:
+                    hit["strategy"] = "llm_generated"
+                    hits.append(hit)
+                    got_flag = bool(hit.get("value"))
+                    # 未命中 flag 的尝试也反馈，帮助下一轮调整
+                    prev_attempts.append({
+                        "payload": payload,
+                        "reply": hit.get("response", ""),
+                        "result": "flag" if got_flag else "leak/suspicious",
+                    })
+                else:
+                    # 被拒绝/无响应 → 反馈给 LLM 分析为何失败
+                    prev_attempts.append({
+                        "payload": payload,
+                        "reply": "no flag, likely blocked",
+                        "result": "blocked",
+                    })
+                if got_flag:
+                    break
+            if got_flag:
+                break
         return hits
 
     # ---------- 规则驱动（fallback） ----------

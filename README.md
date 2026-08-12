@@ -15,7 +15,7 @@
       │         │
 ┌─────▼────┐ ┌──▼────────────┐
 │ Web 流水线 │ │ 专项流水线（web/ai/binary/chain）│   P1 SQLi/SSRF/RCE/越权 · P2 AI 应用
-│ recon→指纹 │ │  LLM 规划 + 规则 fallback │     P3 二进制 · P4 区块链
+│ recon→指纹 │ │  LLM 多轮决策循环 + 规则 fallback │     P3 二进制 · P4 区块链
 └─────┬────┘ └──┬────────────┘
 ┌─────▼────────▼─────────────┐
 │ 模型网关（白名单国内模型）      │   tier 路由 fast/standard/deep · failover
@@ -69,9 +69,10 @@ huntforge/
 │   ├── scheduler.py   规则调度器（CAS 领取 + lease 续租 + 过期回收）
 │   └── config.py      YAML + 环境变量配置
 ├── llm/gateway.py     模型网关（OpenAI 兼容 + 网关转换 + tier 路由 + token 计量）
-└── agents/probe.py    P0 探测 Agent（HTTP 探活 + 路径枚举 + flag 正则）
+├── llm/planner.py     渗透规划器（多轮决策 decide_next_step + 归一化清洗层）
+└── agents/            web-ops（决策循环）/ ai-ops（多轮反馈）/ binary / chain / probe
 config/                settings.yaml（运行时）+ llm.yaml（模型）
-tests/                 58 个测试（含端到端 mock 评测）
+tests/                 63 个测试（含 LLM 决策循环与端到端 mock 评测）
 ```
 
 ## 安全与合规
@@ -100,12 +101,16 @@ tests/                 58 个测试（含端到端 mock 评测）
 | Web | unauth-demo | 鉴权头绕过 | web-ops unauth → X-Admin 头 |
 | Web | sqli-demo | SQL 注入登录绕过 | web-ops sqli → **会话跟随 → 管理页 flag（漏洞链）** |
 | Web | lfi-demo | 路径遍历 | web-ops lfi → ../ 读 flag.txt |
-| AI | ai-demo | 提示词注入 | ai-ops 侦察 → LLM 规划 → 210 条知识库 fallback |
+| AI | ai-demo | 提示词注入 | ai-ops 侦察 → LLM 多轮反馈 → 210 条知识库 fallback |
 | 二进制 | binary-demo | 字符串泄露 | binary-ops strings 提取 + LLM 审计增强 |
 | 区块链 | chain-demo | 合约重入 | chain-ops 规则扫描 + LLM 语义审计 |
 
 **阶段序列**：`probe（路径枚举）→ 专项 ops（web/ai/binary/chain）→ idle`。
 
-**LLM 说明**：模型网关默认关闭；配置 `HUNTFORGE_GATEWAY=1` 且提供国内模型 key 后，LLM 参与 Web 规划、AI payload 生成、二进制审计和合约语义审计，并通过 `model_usage` 记录成本。
+**LLM 说明**：模型网关默认关闭；配置 `HUNTFORGE_GATEWAY=1` 且提供国内模型 key 后，LLM 参与决策链，并通过 `model_usage` 记录成本：
+- **Web 多轮决策循环**：首轮 `analyze_web_target` 分析攻击面 → `decide_next_step` 生成 `get/post/flag/stop` 指令（≤6 轮）→ agent 执行并把响应摘要回灌历史，命中即停；LLM 不可用时规则检查兜底
+- **AI 多轮反馈**：`generate_ai_payloads(recon_log, prev_attempts)` 把上一轮 payload/回复/结果反馈给 LLM（≤3 轮 × ≤4 条载荷），迭代绕过防御
+- **二进制审计 / 合约语义审计**：静态分析结果交给 LLM 深度解读（deep/standard tier）
+- 所有 LLM 输出经归一化清洗层（白名单/限长/防注入），非法输出强制降级为规则链路
 
 **比赛提交物**（`docs/`）：技术方案文档（架构/方法/实验/创新点）+ 自审计报告（宣称 vs 实际 + 10 个真实缺陷记录）+ 量化报表（`huntforge/report.py` 自动生成六项指标）。

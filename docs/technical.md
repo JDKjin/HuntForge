@@ -39,7 +39,7 @@ HuntForge（铸猎）是一个面向 SRC 定向漏洞挖掘与二进制漏洞自
 ```
 
 **关键设计原则**：
-1. **规则权威、LLM 决策分层**：调度/路由/预算/重试全部规则化；LLM 只在指纹判定、漏洞验证、payload 定制、逆向审计四个位置介入。无公网可运行、成本可精确计量、行为可复现。
+1. **规则权威、LLM 决策分层**：调度/路由/预算/重试全部规则化；LLM 只在指纹判定、Web 多轮探测决策、AI payload 定制与反馈迭代、漏洞验证、逆向审计五个位置介入。无公网可运行、成本可精确计量、行为可复现。
 2. **SQLite 作为协调控制面**：任务领取用 UPDATE-CAS 原子操作 + lease 租约（过期自动回收），崩溃重启后遗留任务自动回 pending，保证"不重不漏"。
 3. **幂等提交状态机**：`pending→submitting→accepted/rejected/unknown`，同一 (题目, flag) 由哈希去重唯一约束，递增冷却 `[0,30,120,300,600]s` 防提交风暴。
 4. **阶段序列推进**：`probe（路径枚举）→ 专项 ops（漏洞挖掘）→ idle（等待更高阶段）`，某阶段解出即停，避免无限重扫；平台换题（target 变化）自动复位重测。
@@ -48,14 +48,15 @@ HuntForge（铸猎）是一个面向 SRC 定向漏洞挖掘与二进制漏洞自
 
 ### 3.1 Web 挖掘流水线（web-ops）
 1. **指纹识别**：内置规则库（30 条头/正文/路径特征）零成本识别 nginx/thinkphp/spring/actuator/shiro 等技术栈，**指纹驱动专项检查排序**（如 actuator → unauth 优先，thinkphp → RCE 优先）。
-2. **专项检查**：五类检查全部规则化：
+2. **LLM 多轮决策循环**：首轮 `analyze_web_target` 分析攻击面（隐藏路径/注入参数/WAF 特征/检查优先级）后，进入 `decide_next_step` 驱动的多轮探测——LLM 基于历史响应摘要生成 `get/post/flag/stop` 指令（≤6 轮），agent 执行并把结果回灌历史，命中 flag 即停。LLM 输出经归一化层强制约束（动作白名单、同源路径校验、kv 键白名单、无候选自动降级 stop），不可用或输出非法时自动降级。
+3. **专项检查**：LLM 循环未命中时执行，五类检查全部规则化：
    - **unauth**：35 个管理/API 路径枚举 + 6 种鉴权头绕过（X-Admin/X-Forwarded-For/X-Original-URL…）
    - **sqli**：登录表单注入绕过（`' or '1'='1' --`）+ 参数布尔盲注差异探测（恒真/恒假响应对比）
    - **lfi**：8 种遍历载荷 × 12 个文件参数 × 4 种路径形态，passwd 特征与 flag 正则双判定
    - **ssrf**：URL 类参数替换内网地址（回环/元数据/IPv6），内网服务特征判定
    - **rce**：命令注入回显探测（`;id`/`|id`/`$(id)`）+ SSTI 探测（`{{7*7}}`）
-3. **漏洞链**：SQLi 登录绕过后自动提取会话凭据，跟随访问管理页抓取 flag（`注入→会话→数据泄露` 链路，结构化记录在 finding 的 confirm 字段）。
-4. **7Q Gate 证据门禁**：每个发现必须证据完整（url/request/response/impact）+ 复现确认 + 实质影响，防误报（纯信息泄露默认 kill，防报告灌水）。
+4. **漏洞链**：SQLi 登录绕过后自动提取会话凭据，跟随访问管理页抓取 flag（`注入→会话→数据泄露` 链路，结构化记录在 finding 的 confirm 字段）。
+5. **7Q Gate 证据门禁**：每个发现必须证据完整（url/request/response/impact）+ 复现确认 + 实质影响，防误报（纯信息泄露默认 kill，防报告灌水）。
 
 ### 3.2 二进制流水线（binary-ops）
 - 魔数识别（ELF/PE/Mach-O）→ 无依赖 strings 提取（ASCII+UTF-16LE 双通道）→ flag 正则命中即提交
@@ -64,7 +65,8 @@ HuntForge（铸猎）是一个面向 SRC 定向漏洞挖掘与二进制漏洞自
 
 ### 3.3 AI 应用流水线（ai-ops）
 - 四形态交互适配（OpenAI 兼容 / /chat JSON / form / GET 反射）自动发现
-- 210 条内置攻击技术按价值排序遍历（提示词注入优先），命中 flag 立即停止全部探测
+- **LLM 多轮反馈**：侦察（中性消息）→ `generate_ai_payloads(recon_log, prev_attempts)` 生成针对性载荷，每轮执行结果（payload/回复/命中与否）回灌给 LLM 迭代优化（≤3 轮 × ≤4 条载荷），命中 flag 立即停止
+- **知识库 fallback**：210 条内置攻击技术按价值排序遍历（提示词注入优先），LLM 不可用或未命中时兜底
 - 响应分析分层：严格 flag 命中 > 敏感泄露线索（password/api_key/env 特征）> 拒绝识别
 
 ### 3.4 区块链流水线（chain-ops）
