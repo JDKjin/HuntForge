@@ -86,24 +86,30 @@ def _recv_until(sock: socket.socket, marks: tuple[bytes], timeout: float,
     return data
 
 
-def _try_login(host: str, port: int, timeout: float) -> socket.socket | None:
-    """依次尝试默认凭据。成功返回已登录的 socket（读到命令提示符）。"""
+def _try_login(host: str, port: int, timeout: float,
+               deadline: float) -> socket.socket | None:
+    """依次尝试默认凭据（总时限 deadline）。成功返回已登录的 socket。"""
     for user, pwd in DEFAULT_CREDS:
+        left = deadline - time.time()
+        if left <= 0:
+            break
+        step = min(timeout, left)
         try:
-            s = socket.create_connection((host, port), timeout=timeout)
-            banner = _recv_until(s, PROMPT_MARKS, timeout)
+            s = socket.create_connection((host, port), timeout=step)
+            banner = _recv_until(s, PROMPT_MARKS, step)
             # 等用户名提示
             if not any(m in banner.lower() for m in (b"login", b"username", b"user")):
                 if any(banner.rstrip().endswith(m) for m in PROMPT_MARKS):
                     pass  # 无登录提示（开放 shell）→ 直接当已登录
                 else:
                     _send(s, b"\r\n")
-                    banner += _recv_until(s, PROMPT_MARKS, timeout)
+                    banner += _recv_until(s, PROMPT_MARKS, min(timeout, deadline - time.time()))
             _send(s, user.encode() + b"\r\n")
-            resp = _recv_until(s, (b"password", b"passwd", b"pwd") + PROMPT_MARKS, timeout)
+            resp = _recv_until(s, (b"password", b"passwd", b"pwd") + PROMPT_MARKS,
+                               min(timeout, deadline - time.time()))
             if b"password" in resp.lower():
                 _send(s, pwd.encode() + b"\r\n")
-                shell = _recv_until(s, PROMPT_MARKS, timeout)
+                shell = _recv_until(s, PROMPT_MARKS, min(timeout, deadline - time.time()))
             else:
                 shell = resp
             if any(shell.rstrip().endswith(m) for m in PROMPT_MARKS):
@@ -114,9 +120,10 @@ def _try_login(host: str, port: int, timeout: float) -> socket.socket | None:
     return None
 
 
-def run(host: str, port: int = 23, timeout: float = 30.0) -> dict:
-    """工具入口：返回 {ok, login, outputs, flags}。"""
-    sock = _try_login(host, port, timeout)
+def run(host: str, port: int = 23, timeout: float = 45.0) -> dict:
+    """工具入口：返回 {ok, login, outputs, flags}。timeout 是总时限。"""
+    deadline = time.time() + timeout
+    sock = _try_login(host, port, timeout, deadline)
     if sock is None:
         return {"ok": False, "error": "no default credential worked", "flags": []}
     outputs: list[dict] = []

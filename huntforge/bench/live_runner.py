@@ -132,6 +132,8 @@ class LiveRunner:
                     return
                 except TsecError as exc:
                     log.warning("题目 %s 处理出错: %s", ch.get("unique_code"), exc)
+                except Exception as exc:  # noqa: BLE001 - 单题任何异常都不应杀死整个跑分
+                    log.exception("题目 %s 未知异常: %s", ch.get("unique_code"), exc)
             if not progress:
                 return
 
@@ -302,10 +304,10 @@ class LiveRunner:
         desc = (ch.get("description") or "").lower()
         if port == 23 or "telnet" in desc or "远程登录" in desc:
             log.info("%s: telnet 登录工具 -> %s:%s", code, host, port)
-            result = call_tool("telnet_login", host=host, port=port)
+            result = call_tool("telnet_login", host=host, port=port, timeout=45)
         else:
             log.info("%s: TCP 协议探测工具 -> %s:%s", code, host, port)
-            result = call_tool("tcp_probe", host=host, port=port)
+            result = call_tool("tcp_probe", host=host, port=port, timeout=30)
         flags = result.get("flags") or []
         if flags:
             log.info("%s: 工具提取到 %d 个 flag 候选", code, len(flags))
@@ -345,7 +347,7 @@ class LiveRunner:
                                planner=planner,
                                stop_after_flag=(flag_count <= 1),
                                # 实盘：规则快赢优先，LLM 探索殿后；步数收窄省时间
-                               llm_first=False, max_llm_steps=3, min_llm_time=20)
+                               llm_first=False, max_llm_steps=4, min_llm_time=20)
         if agent_type == "ai-ops":
             return AIOpsAgent(**kwargs)
         if agent_type == "binary-ops":

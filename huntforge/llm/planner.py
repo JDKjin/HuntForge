@@ -272,7 +272,7 @@ class PentestPlanner:
         for h in history[-self.MAX_HISTORY:]:
             hist_lines.append(
                 f"[{h.get('seq')}] {h.get('method', 'GET')} {h.get('path', '/')} "
-                f"-> {h.get('status', '?')}\n  snippet: {h.get('snippet', '')[:200]}"
+                f"-> {h.get('status', '?')}\n  snippet: {h.get('snippet', '')[:600]}"
             )
         hist_str = "\n".join(hist_lines) if hist_lines else "(无历史)"
         hint_str = json.dumps(hints, ensure_ascii=False)[:500] if hints else "null"
@@ -301,7 +301,11 @@ class PentestPlanner:
 要求：
 - 基于证据推理，不重复已尝试且失败的路径
 - 优先尝试认证绕过、未授权 API、参数注入、隐藏路径
-- 若响应中出现 flag 格式字符串，直接返回 flag"""
+- 若响应中出现 flag 格式字符串，直接返回 flag
+决策规则（务必遵守）：
+- 最近一步若为 404/空响应/连接失败，不得直接 stop——换一个不同策略的探测再试
+- 同一路径同一参数连续失败 2 次，必须换方向
+- 只有确认没有更值得尝试的探测时才输出 stop"""
 
         return self._normalize_step(self._call(prompt, tier="standard"))
 

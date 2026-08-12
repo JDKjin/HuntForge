@@ -79,8 +79,36 @@ def probe(host: str, port: int, payloads: list[bytes] | None = None,
 
 
 def run(host: str, port: int, timeout: float = 8.0) -> dict:
-    """工具入口：返回 {ok, banner, responses, flags}。"""
-    results = probe(host, port, timeout=timeout)
+    """工具入口：返回 {ok, banner, responses, flags}。
+
+    timeout 是总时限（含所有载荷），超时立即停止剩余探测。
+    """
+    deadline = time.time() + timeout
+    results = []
+    for p in [b"<banner>"] + list(PROBE_PAYLOADS):
+        left = deadline - time.time()
+        if left <= 0:
+            break
+        try:
+            s = socket.create_connection((host, port), timeout=min(left, 5.0))
+            if p == b"<banner>":
+                # banner 只给 2s（有就有，没有立即进入载荷探测，别吃掉总预算）
+                resp = _read_once(s, min(left, 2.0))
+                results.append({"payload": "<banner>",
+                                "response": resp.decode("utf-8", "replace")[:2000]})
+            else:
+                s.sendall(p)
+                resp = _read_once(s, min(left, 5.0))
+                text = resp.decode("utf-8", "replace")
+                results.append({"payload": p.decode("utf-8", "replace"),
+                                "response": text[:2000]})
+                if extract_flags(text):
+                    break
+            s.close()
+        except OSError as exc:
+            results.append({"payload": (p.decode("utf-8", "replace")
+                                        if p != b"<banner>" else "<banner>"),
+                            "response": "", "error": str(exc)})
     flags: list[str] = []
     for r in results:
         flags.extend(extract_flags(r.get("response", "")))
