@@ -50,6 +50,12 @@ def test_classify_submit_body_status_wins_over_http_code():
     assert _classify_submit(500, {"status": "error"}) == "unknown"
 
 
+def test_classify_submit_rate_limit_is_retryable():
+    """429 是频率限制，不是答案错误 —— 必须判 unknown 走冷却重试，不能放弃正确答案。"""
+    assert _classify_submit(429, {}) == "unknown"
+    assert _classify_submit(429, {"status": "rate_limited"}) == "unknown"
+
+
 def test_challenge_from_unknown_field_names():
     c = Challenge.from_unknown({"task_id": "t9", "type": "AI", "host": "http://x:1"})
     assert c.id == "t9" and c.category == "ai" and c.target == "http://x:1"

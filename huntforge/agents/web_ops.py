@@ -56,7 +56,9 @@ class WebOpsAgent:
 
         # 2) LLM 首轮分析（核心：理解系统、发现攻击面）
         llm_hints: dict = {}
+        llm_used = False
         if self.planner and main_resp is not None and self._time_left() > MIN_LLM_TIME:
+            llm_used = True
             llm_hints = self.planner.analyze_web_target(
                 target,
                 main_resp.status_code,
@@ -77,6 +79,7 @@ class WebOpsAgent:
         llm_steps = 0
         if (self.planner and hasattr(self.planner, "decide_next_step")
                 and self._time_left() > MIN_LLM_TIME):
+            llm_used = True
             llm_candidates, llm_steps = self._llm_decision_loop(
                 ch, target, llm_hints,
             )
@@ -131,7 +134,7 @@ class WebOpsAgent:
             "ok": True,
             "outcome": "flag_found" if n_flag else "scanned",
             "fingerprints": tags,
-            "llm_used": bool(llm_hints),
+            "llm_used": llm_used,
             "llm_steps": llm_steps,
             "candidates": len(candidates),
             "verified": n_verified,
@@ -149,6 +152,7 @@ class WebOpsAgent:
         history: list = []
         seq = 0
         got_flag = False
+        seen_urls: set = set()   # (action, path, params, data) 去重，防 LLM 空转
         for step in range(MAX_LLM_STEPS):
             if self._time_left() <= 0 or got_flag:
                 break
@@ -180,10 +184,17 @@ class WebOpsAgent:
             path = str(decision.get("path") or "/")
             if not path.startswith("/"):
                 path = "/" + path
-            url = base.rstrip("/") + path
             params = decision.get("params") or {}
             data = decision.get("data") or {}
             headers = decision.get("headers") or {}
+            url_key = (action, path, repr(params), repr(data))
+            if url_key in seen_urls:
+                self.db.event("llm.web_step", "challenge", ch["id"],
+                              {"step": step, "action": action, "path": path,
+                               "reason": "重复指令，停止防空转"})
+                break
+            seen_urls.add(url_key)
+            url = base.rstrip("/") + path
             seq += 1
             if action == "post":
                 resp = post(url, self.http_timeout, data=data or None,

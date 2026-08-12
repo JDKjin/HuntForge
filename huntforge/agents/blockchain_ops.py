@@ -94,8 +94,10 @@ class BlockchainOpsAgent:
                     "confirm": {"note": "规则命中（规则库内置）"},
                 })
 
-            # 3) LLM 语义审计（主路径，规则找不到 flag 时必走）
+            # 3) LLM 语义审计（规则找不到 flag 时才调用）
+            llm_used = False
             if self.planner and not flag and self._time_left() > 5:
+                llm_used = True
                 llm_result = self.planner.audit_contract(src)
                 if llm_result:
                     self.db.event("llm.contract_audit", "challenge", ch["id"],
@@ -129,7 +131,7 @@ class BlockchainOpsAgent:
                 "ok": True,
                 "outcome": "analyzed",
                 "matches": len(matches),
-                "llm_used": bool(self.planner),
+                "llm_used": llm_used,
                 **findings,
             }
         finally:

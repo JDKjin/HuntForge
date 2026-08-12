@@ -81,6 +81,7 @@ class AIOpsAgent:
                       {"msg": f"ai-ops: endpoint {endpoint[0]} mode={endpoint[1]}"})
 
         # LLM 驱动路径（有 planner 时）
+        self._llm_called = False
         if self.planner and self._time_left() > 30:
             hits = self._llm_driven_attack(ch, endpoint)
         else:
@@ -96,7 +97,7 @@ class AIOpsAgent:
             "outcome": "flag_found" if n_flag else "scanned",
             "endpoint": endpoint[0],
             "requests": self._requests,
-            "llm_used": self.planner is not None,
+            "llm_used": self._llm_called,
             "hits": len(hits),
             "verified": n_verified,
             "flags": n_flag,
@@ -129,6 +130,7 @@ class AIOpsAgent:
         for rnd in range(MAX_LLM_ROUNDS):
             if got_flag or self._time_left() <= 0 or self._requests >= self.max_requests:
                 break
+            self._llm_called = True
             strategy = self.planner.generate_ai_payloads(
                 recon_log, max_payloads=LLM_PAYLOADS_PER_ROUND,
                 prev_attempts=prev_attempts,

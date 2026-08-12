@@ -66,10 +66,11 @@ class BinaryOpsAgent:
             info = self._analyze(Path(path))
             candidates = self._heuristic_candidates(info, ch["id"])
 
-            # LLM 深度审计：无论规则是否命中，都尝试（主路径）
-            planner = self.planner
-            if planner and self._time_left() > 10 and not any(c.get("value") for c in candidates):
-                llm_result = planner.audit_binary(
+            # LLM 深度审计：规则未直接命中 flag 时才调用（避免无谓消耗预算）
+            llm_used = False
+            if self.planner and self._time_left() > 10 and not any(c.get("value") for c in candidates):
+                llm_used = True
+                llm_result = self.planner.audit_binary(
                     info.get("format", "unknown"),
                     info.get("strings", []),
                     info.get("dangerous", []),
@@ -87,7 +88,7 @@ class BinaryOpsAgent:
                 "format": info.get("format"),
                 "strings_found": len(info.get("strings", [])),
                 "dangerous": info.get("dangerous", []),
-                "llm_used": bool(planner),
+                "llm_used": llm_used,
                 **findings,
             }
         finally:
