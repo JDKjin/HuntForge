@@ -26,11 +26,11 @@ class FakePlanner:
         self.ai_calls = 0
         self.feedback_rounds = []
 
-    def analyze_web_target(self, url, status, headers, body, tags):
+    def analyze_web_target(self, url, status, headers, body, tags, brief=""):
         self.web_calls += 1
         return {"hidden_paths": ["/api/v1/flag"], "priority_checks": ["unauth"]}
 
-    def decide_next_step(self, url, history, hints=None):
+    def decide_next_step(self, url, history, hints=None, brief=""):
         """历史里无 /api/v1/flag → 让 agent 去探测它；有 → 停止。"""
         for h in history:
             if h.get("path") == "/api/v1/flag":

@@ -13,7 +13,7 @@ def mb():
 
 
 class FakePlanner:
-    def analyze_web_target(self, url, status, headers, body, tags):
+    def analyze_web_target(self, url, status, headers, body, tags, brief=""):
         return {
             "hidden_paths": ["/api/v1/flag"],
             "extra_form_paths": ["/login"],

@@ -21,20 +21,37 @@ from .tsec_client import (ChallengeNotFound, DuplicateSubmit, InvalidState,
 log = logging.getLogger("huntforge.live")
 
 DIFF_RANK = {"easy": 0, "medium": 1, "hard": 2}
-# 深攻阶段的解出概率先验（用于期望值排序：分数 × 概率）
-DIFF_PROB = {"easy": 0.30, "medium": 0.15, "hard": 0.05}
+# 可打性先验：题面含未授权/S3/路径的 HTTP 题优先；f1/f2 固件几乎不可打
+DIFF_PROB = {"easy": 0.20, "medium": 0.15, "hard": 0.08}
+
+
+def skip_reason(ch: dict) -> str:
+    """能力弃权：f1/f2 自定义协议/固件，当前工具链期望分≈0。"""
+    code = (ch.get("unique_code") or "").lower()
+    desc = (ch.get("description") or "").lower()
+    if code.startswith(("f1-", "f2-")):
+        return "f1/f2 协议或固件题，当前工具链打不穿"
+    if any(k in desc for k in ("固件", "mcu", "嵌入式", "心跳")) and not any(
+            k in desc for k in ("http", "web", "api")):
+        return "固件/嵌入式题，跳过"
+    return ""
 
 
 def expected_value(ch: dict) -> float:
+    if skip_reason(ch):
+        return 0.0
     score = ch.get("total_score") or 0
-    return score * DIFF_PROB.get(ch.get("difficulty", ""), 0.1)
+    desc = (ch.get("description") or "").lower()
+    bonus = 0.2 if any(k in desc for k in ("未授权", "默认口令", "s3", "path-style",
+                                           "路径", "bucket", "actuator", "nacos")) else 0.0
+    return score * (DIFF_PROB.get(ch.get("difficulty", ""), 0.1) + bonus)
 
-# 每类题目的 Agent 尝试链（依次执行，时间盒内全部跑完）
+# 每类题目的 Agent 尝试链（实盘去掉独立 probe，省 15–40s/题）
 AGENT_CHAIN = {
-    "web": ["probe", "web-ops"],
-    "ai": ["probe", "ai-ops", "web-ops"],
-    "binary": ["probe", "binary-ops"],
-    "blockchain": ["probe", "chain-ops"],
+    "web": ["web-ops"],
+    "ai": ["ai-ops", "web-ops"],
+    "binary": ["binary-ops"],
+    "blockchain": ["chain-ops"],
 }
 
 
@@ -47,15 +64,14 @@ def classify_challenge(ch: dict) -> str:
         return "binary"
     if "区块链" in desc or "合约" in desc or code.startswith(("chain", "bc-")):
         return "blockchain"
-    if any(k in desc for k in ("ai", "模型", "智能", "提示词", "prompt")) or code.startswith("c-"):
-        # c- 系列多为 AI/安全方向混合，AI 链失败会自动回退 web 规则链
-        return "ai" if any(k in desc for k in ("ai", "模型", "智能", "提示", "prompt")) else "web"
+    if any(k in desc for k in ("ai", "模型", "智能", "提示词", "prompt")):
+        return "ai"
     return "web"
 
 
 class LiveRunner:
     def __init__(self, base_url: str, token: str, *,
-                 per_challenge_timebox: float = 300.0,
+                 per_challenge_timebox: float = 480.0,
                  llm_cfg: Optional[dict] = None,
                  http_timeout: float = 5.0,
                  max_active: int = 3):
@@ -88,13 +104,9 @@ class LiveRunner:
     def run(self, max_total_time: Optional[float] = None,
             max_challenges: Optional[int] = None) -> dict:
         deadline = time.time() + max_total_time if max_total_time else None
-        # 阶段 1：纯规则快扫 easy 题（不花 LLM token，限时防止挤占深攻预算）
-        self._pass(deadline, per_challenge=75.0, use_llm=False,
-                   label="pass1 规则快扫(easy)", only_easy=True,
-                   max_pass_time=1200.0, max_attempts=1)
-        # 阶段 2：规则 + LLM 深攻剩余未解题（按分值从高到低，每阶段最多攻 2 次）
+        # 实盘规则快扫已证伪（12 个 easy 零产出），直接 LLM 深攻；f1/f2 在 _solve_one 弃权
         self._pass(deadline, per_challenge=self.per_challenge_timebox,
-                   use_llm=True, label="pass2 LLM 深攻", max_attempts=2)
+                   use_llm=True, label="LLM 深攻", max_attempts=2)
         return self._summary(self.client.list_challenges())
 
     def _pass(self, deadline: Optional[float], *, per_challenge: float,
@@ -155,15 +167,30 @@ class LiveRunner:
                 return
 
     def _summary(self, challenges: list[dict]) -> dict:
-        total_score = sum(self.scores.values())
+        """以平台 progress 为准，不用本进程 self.scores（上一轮解的题本轮会记成 0）。"""
         completed = sum(1 for c in challenges if c.get("is_completed"))
-        return {"total": len(challenges), "completed": completed,
-                "total_score": total_score, "scores": dict(self.scores)}
+        partial = sum(1 for c in challenges if c.get("correct_flag_count", 0) > 0
+                      and not c.get("is_completed"))
+        awarded = 0
+        per: dict[str, int] = {}
+        for c in challenges:
+            n_ok = int(c.get("correct_flag_count") or 0)
+            n_all = int(c.get("flag_count") or 1) or 1
+            piece = int(round((c.get("total_score") or 0) * n_ok / n_all))
+            if n_ok:
+                per[c["unique_code"]] = piece
+                awarded += piece
+        return {"total": len(challenges), "completed": completed, "partial": partial,
+                "total_score": awarded, "scores": per}
 
     # ---------------- 单题流程 ----------------
     def _solve_one(self, ch: dict, deadline: Optional[float],
                    per_challenge: float, use_llm: bool) -> bool:
         code = ch["unique_code"]
+        why = skip_reason(ch)
+        if why:
+            log.info("======== 跳过 %s (%s) ========", code, why)
+            return False
         log.info("======== 开始 %s (difficulty=%s score=%s flags=%s) ========",
                  code, ch.get("difficulty"), ch.get("total_score"), ch.get("flag_count"))
 
@@ -266,8 +293,8 @@ class LiveRunner:
             remaining = budget - (time.time() - started_at)
             if remaining < 20:
                 break
-            # probe 只给最多 40s，把时间留给专项检查/LLM
-            tb = min(remaining, 40.0) if agent_type == "probe" else remaining
+            # ai-ops 找不到对话端点时别耗光预算，最多 40s 然后回退 web-ops
+            tb = min(remaining, 40.0) if agent_type == "ai-ops" else remaining
             agent = self._make_agent(agent_type, code, ch, target, tb,
                                      flag_count, planner)
             if agent is None:
@@ -363,10 +390,9 @@ class LiveRunner:
                                timebox=timebox, submitter=submitter,
                                planner=planner,
                                stop_after_flag=(flag_count <= 1),
-                               # 实盘：规则快赢优先，LLM 探索殿后；步数收窄省时间
-                               llm_first=False, max_llm_steps=4, min_llm_time=20,
-                               # 规则阶段最多占 45% 时间，其余保证留给 LLM 循环
-                               rules_max_seconds=timebox * 0.45)
+                               # 实盘：规则只做 30s recon，LLM 8 步跟进题面线索
+                               llm_first=False, max_llm_steps=8, min_llm_time=20,
+                               rules_max_seconds=30.0)
         if agent_type == "ai-ops":
             return AIOpsAgent(**kwargs)
         if agent_type == "binary-ops":

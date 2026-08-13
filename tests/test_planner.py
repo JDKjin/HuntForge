@@ -10,6 +10,15 @@ class DummyGW:
         return self.resp
 
 
+def test_extract_flag_decodes_layers():
+    from huntforge.web.common import extract_flag
+    assert extract_flag("x flag{plain} y") == "flag{plain}"
+    assert extract_flag("flag%7burl_enc%7d") == "flag{url_enc}"
+    hidden = __import__("base64").b64encode(b"flag{b64_secret}").decode()
+    assert extract_flag(f'{{"k": "{hidden}"}}') == "flag{b64_secret}"
+    assert extract_flag("nope") is None
+
+
 def test_web_planner_normalizes_and_filters():
     planner = PentestPlanner(DummyGW({
         "hidden_paths": ["/admin", "http://evil", "../x", "/admin"],
@@ -37,6 +46,18 @@ def test_ai_planner_caps_payload_count():
     out = planner.generate_ai_payloads([], max_payloads=2)
     assert out["payloads"] == ["one", "two"]
     assert len(out["strategy"]) <= 220
+
+
+def test_skip_reason_and_expected_value():
+    from huntforge.bench.live_runner import expected_value, skip_reason
+    assert skip_reason({"unique_code": "f1-04", "description": "TCP"})
+    assert skip_reason({"unique_code": "f2-01", "description": "固件"})
+    assert not skip_reason({"unique_code": "d-02", "description": "S3 云函数"})
+    ev_b = expected_value({"unique_code": "b-01", "difficulty": "medium",
+                           "total_score": 1200, "description": "Web"})
+    ev_f = expected_value({"unique_code": "f1-04", "difficulty": "easy",
+                           "total_score": 200, "description": "TCP"})
+    assert ev_b > ev_f == 0
 
 
 def test_step_planner_accepts_script_action():

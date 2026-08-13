@@ -44,7 +44,15 @@ _SCRIPT_GUARD = (
 )
 
 
-def _run_script(code: str, base: str, timeout: float = 25.0) -> str:
+def _clip_ends(text: str, limit: int = 4000) -> str:
+    if len(text) <= limit:
+        return text
+    head_n = int(limit * 0.6)
+    tail_n = limit - head_n - 20
+    return text[:head_n] + "\n...[truncated]...\n" + text[-tail_n:]
+
+
+def _run_script(code: str, base: str, timeout: float = 40.0, brief: str = "") -> str:
     """在受限沙箱执行 LLM 生成的 python 脚本（仅允许访问靶场网段），返回 stdout。
 
     TARGET 环境变量 = 目标 base URL。脚本把结果 print 出来即可回灌给 LLM。
@@ -63,16 +71,16 @@ def _run_script(code: str, base: str, timeout: float = 25.0) -> str:
         r = subprocess.run(
             [sys.executable, "-c", _SCRIPT_GUARD + wrapper],
             capture_output=True, timeout=timeout,
-            env={**os.environ, "TARGET": base, "PYTHONIOENCODING": "utf-8",
-                 "PYTHONUTF8": "1"},
+            env={**os.environ, "TARGET": base, "DESC": brief[:800],
+                 "PYTHONIOENCODING": "utf-8", "PYTHONUTF8": "1"},
         )
         # 注意：不用 text=True——Windows 上默认 GBK 解码子进程 UTF-8 输出会崩掉 reader 线程
-        out = (r.stdout or b"").decode("utf-8", "replace")[:2000]
+        out = (r.stdout or b"").decode("utf-8", "replace")
         if r.stderr:
             out += "\n[stderr] " + r.stderr.decode("utf-8", "replace")[:400]
         if not out.strip():
             out = "[script produced no output]"
-        return out
+        return _clip_ends(out, 4000)
     except subprocess.TimeoutExpired:
         return "[script timeout]"
     except Exception as exc:  # noqa: BLE001
@@ -154,6 +162,7 @@ class WebOpsAgent:
                 dict(main_resp.headers),
                 body_of(main_resp),
                 tags,
+                brief=ch.get("title") or "",
             ) or {}
             if llm_hints:
                 self.db.event("llm.web_analysis", "challenge", ch["id"],
@@ -268,13 +277,21 @@ class WebOpsAgent:
         for step in range(self.max_llm_steps):
             if self._time_left() <= 0 or got_flag:
                 break
-            decision = self.planner.decide_next_step(base, history, hints)
+            decision = self.planner.decide_next_step(
+                base, history, hints, brief=ch.get("title") or "",
+            )
             if not decision:
                 break
             action = decision.get("next_action", "stop")
             reason = str(decision.get("reason", ""))[:100]
             log.info("llm-step %d: action=%s path=%s reason=%s",
                      step, action, decision.get("path"), reason)
+            if action == "stop" and len(history) < 3:
+                # 早停硬门：少于 3 次有效探测不许停（题面/robots/首页还没看完）
+                action = "get"
+                if not decision.get("path"):
+                    decision["path"] = "/robots.txt" if len(history) == 1 else "/"
+                log.info("llm-step %d: 早停拦截，改为 GET %s", step, decision.get("path"))
             if action == "stop":
                 if not history:
                     # 空转保护：历史为空不许停，强制先探测首页再让 LLM 重新决策
@@ -327,11 +344,11 @@ class WebOpsAgent:
                     break
                 seen_urls.add(("script", code[:300]))
                 seq += 1
-                out = _run_script(code, base)
+                out = _run_script(code, base, brief=ch.get("title") or "")
                 flag = extract_flag(out)
                 history.append({
                     "seq": seq, "method": "SCRIPT", "path": "(script)",
-                    "status": 0, "snippet": out[:1500],
+                    "status": 0, "snippet": _clip_ends(out, 1500),
                 })
                 self.db.event("llm.web_step", "challenge", ch["id"],
                               {"step": step, "action": "script",

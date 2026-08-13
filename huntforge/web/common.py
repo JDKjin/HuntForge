@@ -1,9 +1,11 @@
 """Web 检查共享工具：flag 正则、请求封装、候选结构。"""
 from __future__ import annotations
 
+import base64
 import re
 from dataclasses import dataclass, field
 from typing import Optional
+from urllib.parse import unquote_plus
 
 import requests
 
@@ -32,8 +34,53 @@ class Candidate:
 
 
 def extract_flag(text: str) -> Optional[str]:
-    m = FLAG_RE.search(text or "")
-    return m.group(0) if m else None
+    """从文本抽 flag；明文没命中时再试 URL 解码 / unicode 转义 / base64 / hex。
+
+    实盘 d-01 一类题 flag 常藏在 JSON 字段或一层编码里，只扫明文会漏提交。
+    """
+    if not text:
+        return None
+    m = FLAG_RE.search(text)
+    if m:
+        return m.group(0)
+    try:
+        decoded = unquote_plus(text)
+        if decoded != text:
+            m = FLAG_RE.search(decoded)
+            if m:
+                return m.group(0)
+    except Exception:
+        pass
+    if "\\u" in text or "\\x" in text:
+        try:
+            unesc = bytes(text, "utf-8").decode("unicode_escape")
+            m = FLAG_RE.search(unesc)
+            if m:
+                return m.group(0)
+        except Exception:
+            pass
+    sample = text[:8000]
+    for tok in re.findall(r"[A-Za-z0-9+/]{16,}={0,2}", sample):
+        pad = tok + "=" * ((4 - len(tok) % 4) % 4)
+        try:
+            raw = base64.b64decode(pad, validate=False)
+            s = raw.decode("utf-8", "ignore")
+        except Exception:
+            continue
+        m = FLAG_RE.search(s)
+        if m:
+            return m.group(0)
+    for tok in re.findall(r"(?:0x)?([0-9a-fA-F]{16,256})", sample):
+        if len(tok) % 2:
+            continue
+        try:
+            s = bytes.fromhex(tok).decode("utf-8", "ignore")
+        except Exception:
+            continue
+        m = FLAG_RE.search(s)
+        if m:
+            return m.group(0)
+    return None
 
 
 def extract_session(text: str) -> Optional[str]:
