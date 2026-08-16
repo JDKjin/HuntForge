@@ -14,7 +14,9 @@ def result(tmp_path_factory):
 
     cfg = Config()
     cfg.data.setdefault("paths", {})["db"] = str(tmp_path_factory.mktemp("e2e") / "e2e.db")
-    summary = run(cfg, mock=True, max_rounds=4, poll_interval=0.1)
+    # poll 0.5s（原 0.1s）：全量回归时 145 个测试数万次连接会耗尽 Windows
+    # ephemeral 端口（WinError 10048），放宽轮询减少连接数
+    summary = run(cfg, mock=True, max_rounds=4, poll_interval=0.5)
     db_path = cfg.data["paths"]["db"]
     db = StateDB(db_path)
     events = db.list_events(limit=500)

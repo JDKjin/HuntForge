@@ -1,0 +1,312 @@
+# HuntForge 声明式工具目录（借鉴 VulHunter tools/local-tools.yaml 设计）
+#
+# 字段语义：
+#   slug        工具唯一名（MCP tools/list 直接暴露）
+#   tier        fingerprint(20s) | quick(45s) | scan(90s) | targeted(120s) | utility | manual
+#   phase_scope 归属的 FSM 状态（exploring/scanning/exploiting/validating），状态机禁止跨态调用
+#   side_effect read-only | local-write | stateful | exploit —— stateful/exploit 需显式授权
+#   integration kali(经 WSL Kali 桥) | poc(定向 POC 脚本) | generator(载荷生成器) | local-python
+#   argv        参数边界安全的调用模板；{target}/{host}/{wordlist}/{script} 为占位符
+#   required_placeholders 必填占位符（缺失拒绝执行）
+#   timeout     单工具超时（0 用 tier 默认）
+#
+# 加工具 = 加一条目，不改代码；catalog.py 负责校验与加载。
+
+tools:
+  # ── Kali 侦察工具链 ─────────────────────────────────────────────
+  - slug: kali_katana
+    title: 爬虫端点发现
+    category: recon
+    tier: scan
+    phase_scope: [exploring, scanning]
+    side_effect: read-only
+    integration: kali
+    argv: ["katana", "-u", "{target}", "-silent", "-jc", "-d", "3", "-rl", "10", "-timeout", "10"]
+    required_placeholders: [target]
+    timeout: 60
+    description: 爬取目标站点全部端点（-jc 含 JS 提取）
+
+  - slug: kali_ffuf_dirs
+    title: 目录爆破
+    category: recon
+    tier: scan
+    phase_scope: [scanning]
+    side_effect: read-only
+    integration: kali
+    argv: ["ffuf", "-u", "{target}/FUZZ", "-w", "{wordlist}", "-mc", "200,201,204,301,302,307,403", "-ac", "-t", "40", "-s", "-timeout", "5"]
+    required_placeholders: [target, wordlist]
+    timeout: 90
+    description: 目录爆破（内置精炼词表：deep_paths/api_direct/gateway_paths 等）
+
+  - slug: kali_nuclei_tech
+    title: 技术指纹扫描
+    category: recon
+    tier: scan
+    phase_scope: [scanning]
+    side_effect: read-only
+    integration: kali
+    argv: ["nuclei", "-u", "{target}", "-t", "{templates}/http/technologies/", "-silent", "-timeout", "15"]
+    required_placeholders: [target, templates]
+    timeout: 120
+    description: nuclei technologies 指纹模板
+
+  - slug: kali_nuclei_low
+    title: 低危漏洞扫描
+    category: scan
+    tier: scan
+    phase_scope: [scanning, exploiting]
+    side_effect: read-only
+    integration: kali
+    argv: ["nuclei", "-u", "{target}", "-t", "{templates}/http/", "-severity", "low,medium", "-silent", "-timeout", "15", "-c", "30"]
+    required_placeholders: [target, templates]
+    timeout: 150
+    description: nuclei 低/中危模板批量扫描
+
+  - slug: kali_sqlmap_check
+    title: SQL 注入智能检测
+    category: scan
+    tier: targeted
+    phase_scope: [exploiting]
+    side_effect: stateful
+    integration: kali
+    argv: ["sqlmap", "-u", "{target}", "--batch", "--smart", "--level", "1", "--risk", "1", "--crawl", "2"]
+    required_placeholders: [target]
+    timeout: 180
+    description: sqlmap 智能检测（level1/risk1 + crawl2，batch 模式）
+
+  - slug: kali_dirsearch
+    title: 多扩展名目录枚举
+    category: recon
+    tier: scan
+    phase_scope: [scanning]
+    side_effect: read-only
+    integration: kali
+    argv: ["dirsearch", "-u", "{target}", "-e", "php,html,js,json,asp,jsp", "-t", "40", "--no-color", "-x", "404", "--format", "plain"]
+    required_placeholders: [target]
+    timeout: 90
+    description: dirsearch 多扩展名目录枚举
+
+  - slug: kali_nmap_top
+    title: 端口扫描
+    category: recon
+    tier: quick
+    phase_scope: [exploring]
+    side_effect: read-only
+    integration: kali
+    argv: ["nmap", "-Pn", "-sT", "--top-ports", "100", "--open", "-T4", "--min-rate", "500", "{host}"]
+    required_placeholders: [host]
+    timeout: 90
+    description: nmap top-100 端口扫描
+
+  - slug: kali_httpx_probe
+    title: HTTP 存活与指纹
+    category: recon
+    tier: fingerprint
+    phase_scope: [exploring]
+    side_effect: read-only
+    integration: kali
+    argv: ["httpx", "-u", "{target}", "-silent", "-status-code", "-title", "-tech-detect", "-timeout", "8"]
+    required_placeholders: [target]
+    timeout: 60
+    description: httpx 探活 + 技术栈指纹
+
+  # ── 二进制分析工具链（radare2/checksec，目标为 Windows 文件路径 → /mnt 挂载）──
+  - slug: kali_r2_info
+    title: radare2 二进制信息
+    category: binary
+    tier: quick
+    phase_scope: [exploiting]
+    side_effect: read-only
+    integration: kali
+    argv: ["r2", "-q", "-c", "iI", "-c", "iE", "{file}"]
+    required_placeholders: [file]
+    timeout: 60
+    description: radare2 文件信息 + 导出表
+
+  - slug: kali_r2_flags
+    title: radare2 字符串/符号扫描
+    category: binary
+    tier: quick
+    phase_scope: [exploiting]
+    side_effect: read-only
+    integration: kali
+    argv: ["r2", "-q", "-c", "izz~flag,key,secret,password,KEY", "{file}"]
+    required_placeholders: [file]
+    timeout: 60
+    description: radare2 字符串表关键词过滤（flag/key/secret）
+
+  - slug: kali_checksec
+    title: 二进制加固检查
+    category: binary
+    tier: fingerprint
+    phase_scope: [exploiting]
+    side_effect: read-only
+    integration: kali
+    argv: ["checksec", "--file={file}"]
+    required_placeholders: [file]
+    timeout: 30
+    description: checksec 保护机制（NX/PIE/Canary/RELRO）
+
+  # ── 逆向自动化（rev.py：triage/本地回放/angr，容器原生，离线零依赖）──
+  - slug: bin_triage
+    title: 二进制静态勘查
+    category: binary
+    tier: quick
+    phase_scope: [exploiting]
+    side_effect: read-only
+    integration: local-python
+    module: huntforge.tools.rev
+    fn: triage_tool
+    timeout: 60
+    description: file/checksec/r2 导入与函数数/flag 字符串/高熵加密段一键勘查
+
+  - slug: bin_run
+    title: 二进制本地回放
+    category: binary
+    tier: quick
+    phase_scope: [exploiting]
+    side_effect: stateful
+    integration: local-python
+    module: huntforge.tools.rev
+    fn: run_tool
+    timeout: 30
+    description: 本地执行二进制（可选候选密钥 argv/stdin），输出扫描 flag{}
+
+  - slug: bin_angr
+    title: angr 符号执行求解
+    category: binary
+    tier: targeted
+    phase_scope: [exploiting]
+    side_effect: local-write
+    integration: local-python
+    module: huntforge.tools.rev
+    fn: angr_tool
+    timeout: 180
+    description: angr 符号化 stdin 求解：找输出含 accepted 的输入（license 校验类 keygen）
+
+  # ── 本地网络工具 ─────────────────────────────────────────────────
+  - slug: tcp_probe
+    title: TCP 协议探测
+    category: network
+    tier: quick
+    phase_scope: [exploring]
+    side_effect: read-only
+    integration: local-python
+    module: huntforge.tools.tcp_service
+    fn: run
+    timeout: 8
+    description: 连接 TCP 服务读 banner，扫描响应中的 flag{}
+
+  - slug: telnet_login
+    title: Telnet 默认凭据登录
+    category: network
+    tier: quick
+    phase_scope: [exploring]
+    side_effect: stateful
+    integration: local-python
+    module: huntforge.tools.telnet_login
+    fn: run
+    timeout: 30
+    description: 默认凭据登录 telnet + 命令枚举找 flag{}
+
+  # ── 载荷生成器（quick 工具层，借鉴 VulHunter tools/quick/）───────
+  - slug: gen_jwt_forge
+    title: JWT 伪造
+    category: payload
+    tier: quick
+    phase_scope: [exploiting]
+    side_effect: read-only
+    integration: generator
+    module: huntforge.tools.quick.adapter
+    fn: jwt_forge
+    timeout: 30
+    description: 伪造/篡改 JWT（none 算法、密钥爆破）
+
+  - slug: gen_deser
+    title: 反序列化载荷
+    category: payload
+    tier: quick
+    phase_scope: [exploiting]
+    side_effect: read-only
+    integration: generator
+    module: huntforge.tools.quick.adapter
+    fn: deser_gen
+    timeout: 60
+    description: PHP/Java/Node 反序列化 payload 生成
+
+  - slug: gen_pickle
+    title: Python pickle 载荷
+    category: payload
+    tier: quick
+    phase_scope: [exploiting]
+    side_effect: read-only
+    integration: generator
+    module: huntforge.tools.quick.adapter
+    fn: pickle_gen
+    timeout: 30
+    description: Python pickle RCE 载荷生成
+
+  - slug: gen_raw_http
+    title: 原始 HTTP 请求
+    category: payload
+    tier: quick
+    phase_scope: [exploiting]
+    side_effect: read-only
+    integration: generator
+    module: huntforge.tools.quick.adapter
+    fn: raw_http
+    timeout: 60
+    description: 构造/发送原始 HTTP 报文（绕过常规解析）
+
+  # ── 定向 POC（指纹命中直击，借鉴 VulHunter tools/phases/）────────
+  - slug: poc_shiro
+    title: Shiro RememberMe 利用
+    category: exploit
+    tier: targeted
+    phase_scope: [exploiting]
+    side_effect: exploit
+    integration: poc
+    script: shiro_exploit/shiro_exploit.py
+    argv: ["{script}", "{target}", "id"]
+    required_placeholders: [target]
+    timeout: 120
+    description: Shiro 默认 key 检测 + ysoserial 反序列化验证
+
+  - slug: poc_springboot
+    title: SpringBoot 敏感端点利用
+    category: exploit
+    tier: targeted
+    phase_scope: [scanning, exploiting]
+    side_effect: exploit
+    integration: poc
+    script: springboot_scan/SpringBoot-Scan.py
+    argv: ["{script}", "-u", "{target}", "-v", "{target}"]
+    required_placeholders: [target]
+    timeout: 120
+    description: SpringBoot actuator 信息泄露 + 主动漏洞验证
+
+  - slug: poc_seeyon
+    title: 泛微 OA 漏洞利用
+    category: exploit
+    tier: targeted
+    phase_scope: [exploiting]
+    side_effect: exploit
+    integration: poc
+    script: seeyon_exp/seeyon_exp.py
+    argv: ["{script}", "-u", "{target}", "-o", "{outfile}", "--att"]
+    required_placeholders: [target, outfile]
+    timeout: 120
+    description: 泛微 OA（seeyon）系列 POC 批量验证（--att 主动利用，证据落文件）
+
+  - slug: poc_weaver_sqli
+    title: 泛微 e-cology FileDownloadForOutDoc SQL 注入
+    category: exploit
+    tier: targeted
+    phase_scope: [exploiting]
+    side_effect: exploit
+    integration: poc
+    script: weaver_sqli/weaver_sqli.py
+    argv: ["{script}", "{target}", "{outfile}"]
+    required_placeholders: [target]
+    timeout: 150
+    description: CVE-2023-34599 前台 SQLi：时间盲注检测 + 报错注入拉表读数据

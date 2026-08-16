@@ -44,6 +44,28 @@ def test_probe_marker_in_request():
     assert r.passed
 
 
+def test_flag_candidate_passes_even_with_missing_fields():
+    """实盘教训：LLM/脚本路径常缺 url/request——带 flag 的候选不得被证据门杀掉。"""
+    r = evaluate({"value": "flag{direct}", "type": "llm_flag"})
+    assert r.passed
+    r2 = evaluate({"value": "flag{b64}", "response": "", "impact": ""})
+    assert r2.passed
+
+
+def test_flag_source_grading():
+    """D0Pagent 来源分级语义：目标响应佐证=high，复现=medium，仅声称=low。"""
+    # high：flag 值出现在目标实际响应中
+    high = evaluate({"value": "flag{real}",
+                     "response": "body contains flag{real} here"})
+    assert high.passed and high.score == 1.0
+    # medium：有复现确认
+    med = evaluate({"value": "flag{real}", "confirm": {"note": "curl 复现"}})
+    assert med.passed and 0.7 < med.score < 0.9
+    # low：仅模型声称 → 仍放行（≥0.5）但降置信
+    low = evaluate({"value": "flag{real}"})
+    assert low.passed and 0.5 <= low.score < 0.7
+
+
 def test_persist_updates_db(db, sample_challenge):
     db.upsert_challenge(sample_challenge)
     fid = db.add_finding("test-1", None, "lfi", 0.9, _ev())

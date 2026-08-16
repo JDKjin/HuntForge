@@ -14,7 +14,10 @@ import logging
 import threading
 import time
 
+from ..core.evidence_store import EvidenceStore
 from ..core.state import StateDB
+from ..core.state_machine import ChallengeFSM
+from ..web.sse import emit_event
 from .client import BenchClient
 
 log = logging.getLogger("huntforge.submission")
@@ -79,8 +82,35 @@ class SubmissionManager:
         self.db.event("submission.result", "challenge", sub["challenge_id"],
                       {"sub_id": sub["id"], "status": status,
                        "attempts": attempts, "error": getattr(result, "error", "")})
-        if status == "accepted":
-            log.info("FLAG ACCEPTED challenge=%s", sub["challenge_id"])
+        # SSE：一次真实平台提交 = 一条真实日志（值脱敏）
+        emit_event(self.db, "submission.result", "challenge", sub["challenge_id"],
+                   tool="platform.submit", agent_id="submission",
+                   params={"challenge_id": sub["challenge_id"], "attempt": attempts},
+                   result={"status": status, "value_masked": _mask(sub["value"])},
+                   extra={"error": getattr(result, "error", "") or None})
+        # 平台判定为最终权威：校准证据 + 推进状态机终态
+        if status in ("accepted", "rejected"):
+            try:
+                EvidenceStore(self.db).calibrate(sub["challenge_id"], sub["value"],
+                                                 status == "accepted")
+            except Exception as exc:  # noqa: BLE001 - 校准失败不影响提交
+                log.warning("evidence calibrate failed: %s", exc)
+            if status == "rejected":
+                # 被拒反证回灌（D0Pagent disproven_hypotheses 语义）：
+                # 写进 lessons，下一轮 planner 读到后不会再生成同值候选
+                self.db.put_memory(
+                    "lesson", f"disproven:{sub['challenge_id']}:{sub['value'][:32]}",
+                    {"summary": f"平台已拒绝 flag 值 {sub['value'][:24]}…"
+                                f"（已证伪，勿再生成此值）", "disproven": True,
+                     "value": sub["value"]},
+                    strength=1.0,
+                )
+            fsm = ChallengeFSM(self.db)
+            if status == "accepted":
+                fsm.mark_solved(sub["challenge_id"], note="flag accepted")
+                log.info("FLAG ACCEPTED challenge=%s", sub["challenge_id"])
+            elif attempts >= self.max_attempts:
+                fsm.mark_failed(sub["challenge_id"], note="submit attempts exhausted")
 
     # ---------- 冷却 ----------
     def _cooldown_ok(self, sub: dict) -> bool:

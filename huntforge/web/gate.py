@@ -14,6 +14,8 @@ from __future__ import annotations
 import logging
 from typing import Any, Optional
 
+from .common import classify_flag_source, extract_flag
+
 log = logging.getLogger("huntforge.gate")
 
 REQUIRED_EVIDENCE = ("url", "request", "response", "impact")
@@ -37,6 +39,19 @@ def evaluate(evidence: dict) -> GateResult:
     """规则版 7Q Gate。evidence 含 url/request/response/impact + 可选 confirm 复现确认。"""
     reasons: list[str] = []
 
+    # Q0 命中 flag 的候选直接出库：实盘教训——LLM/脚本路径经常缺 url/request
+    # 等字段，不能让证据门把真 flag 杀掉；最终判定交给平台提交结果。
+    # 但按来源分级（D0Pagent 语义）：目标响应佐证=high，复现/响应类=medium，
+    # 仅模型声称=low——都放行（≥0.5），置信度随证据强度分层，供提交排序。
+    value = evidence.get("value")
+    if value and extract_flag(str(value)):
+        grade = classify_flag_source(value, evidence)
+        if grade == "high":
+            return GateResult(True, ["flag 候选（目标响应佐证，高可信）直接出库"], 1.0)
+        if grade == "medium":
+            return GateResult(True, ["flag 候选（有复现/响应类佐证，中可信）出库，平台终判"], 0.8)
+        return GateResult(True, ["flag 候选（仅模型声称，低可信）出库，平台终判"], 0.6)
+
     # Q1 证据完整
     missing = [k for k in REQUIRED_EVIDENCE if not evidence.get(k)]
     if missing:
@@ -56,7 +71,8 @@ def evaluate(evidence: dict) -> GateResult:
 
     # Q4 纯指纹/信息泄露（info 型）默认不报（防灌水），有复现确认才保留
     score = 0.8
-    if evidence.get("vuln_type") == "info":
+    vuln_type = evidence.get("vuln_type") or evidence.get("type")
+    if vuln_type == "info":
         score = 0.6 if confirm else 0.4
 
     # Q5 影响可陈述

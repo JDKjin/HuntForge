@@ -1,0 +1,37 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "huntforge"
+version = "0.3.0"
+description = "HuntForge（铸猎）—— TSecBench 实盘 CTF Agent：Claude Code 驾驶舱 + 全自动解题管线（离线 CVE 库、方法论知识库、MCP 工具链、容器纪律调度）"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "JDKjin" }]
+keywords = ["ctf", "pentest", "security", "agent", "tsecbench", "llm"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3.11",
+    "Topic :: Security",
+]
+dependencies = [
+    "requests>=2.31",
+    "PyYAML>=6.0",
+    "flask>=3.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0"]
+
+[project.scripts]
+huntforge = "huntforge.driver:main_cli"
+
+[tool.setuptools.packages.find]
+include = ["huntforge*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"

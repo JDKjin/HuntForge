@@ -83,6 +83,25 @@ def extract_flag(text: str) -> Optional[str]:
     return None
 
 
+def classify_flag_source(value: str, evidence: dict) -> str:
+    """flag 来源分级（移植 D0Pagent _classify_flag_source 语义）：high/medium/low。
+
+    - high：flag 值出现在目标实际响应正文中（证据链完整，最可信）
+    - medium：无响应佐证但有复现确认 / 请求路径指向 response 类输出
+    - low：仅模型声称（LLM 自报），需平台终判
+    """
+    v = str(value or "")
+    response = str(evidence.get("response") or "")
+    if v and v in response:
+        return "high"
+    if evidence.get("confirm"):
+        return "medium"
+    req = str(evidence.get("request") or "").lower()
+    if any(m in req for m in ("response", "body", "json")):
+        return "medium"
+    return "low"
+
+
 def extract_session(text: str) -> Optional[str]:
     """从响应中提取会话凭据（JSON session/token 字段或 cookie）。"""
     m = re.search(r'["\'](?:session|token|access_token|sessid)["\']\s*[:=]\s*["\']([^"\']{4,128})["\']', text or "", re.I)

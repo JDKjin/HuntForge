@@ -102,6 +102,26 @@ CREATE TABLE IF NOT EXISTS memory (
     strength REAL NOT NULL DEFAULT 1.0,
     updated_at REAL NOT NULL
 );
+CREATE TABLE IF NOT EXISTS blackboard (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    challenge_id TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    key TEXT NOT NULL,
+    payload TEXT NOT NULL DEFAULT '{}',
+    status TEXT NOT NULL DEFAULT 'open',
+    confidence REAL NOT NULL DEFAULT 0.5,
+    source TEXT NOT NULL DEFAULT '',
+    lease_expires REAL,
+    created_at REAL NOT NULL,
+    updated_at REAL NOT NULL,
+    UNIQUE(challenge_id, kind, key)
+);
+CREATE INDEX IF NOT EXISTS idx_blackboard_challenge ON blackboard(challenge_id, kind);
+CREATE TABLE IF NOT EXISTS challenge_states (
+    challenge_id TEXT PRIMARY KEY,
+    state TEXT NOT NULL DEFAULT 'idle',
+    updated_at REAL NOT NULL
+);
 """
 
 
@@ -122,6 +142,12 @@ class StateDB:
         self._conn.execute("PRAGMA synchronous=NORMAL")
         self._conn.execute("PRAGMA busy_timeout=5000")
         self._conn.executescript(SCHEMA)
+        # 旧库迁移：blackboard 增加 lease_expires 列（Intent 租约过期回收）
+        try:
+            self._conn.execute(
+                "ALTER TABLE blackboard ADD COLUMN lease_expires REAL")
+        except sqlite3.OperationalError:
+            pass  # 列已存在
         self._conn.commit()
         self._lock = threading.RLock()
 
@@ -158,6 +184,10 @@ class StateDB:
         # 仅当平台实际换了题目（target 变化）才复位重测；
         # 否则保持终态（solved/idle），避免每轮拉题造成重派死循环
         target_changed = bool(old and old["target"] != ch.get("target", ""))
+        # flag_count/total_score 无独立列 → 统一并入 meta（顶层或 meta 传入均可）
+        meta = dict(ch.get("meta") or {})
+        meta.setdefault("flag_count", ch.get("flag_count") or 1)
+        meta.setdefault("total_score", ch.get("total_score") or 0)
         self._execute(
             """INSERT INTO challenges (id,title,category,difficulty,status,target,meta,created_at,updated_at)
                VALUES (?,?,?,?,?,?,?,?,?)
@@ -172,7 +202,7 @@ class StateDB:
                WHERE challenges.status != 'solved'""",
             (ch["id"], ch.get("title", ""), ch.get("category", "web"),
              ch.get("difficulty", "medium"), ch.get("status", "pending"),
-             ch.get("target", ""), self._j(ch.get("meta", {})), 1 if target_changed else 0,
+             ch.get("target", ""), self._j(meta), 1 if target_changed else 0,
              now, now),
         )
         # 换题 → 清旧任务让流水线重跑（提交去重仍由 submissions.dedup_key 保证）
@@ -393,6 +423,143 @@ class StateDB:
             rows = self._query("SELECT * FROM submissions")
         return [dict(r) for r in rows]
 
+    # ---------- blackboard（Fact-Intent 黑板） ----------
+    def upsert_fact(self, challenge_id: str, key: str, payload: dict,
+                    confidence: float = 1.0, source: str = "") -> None:
+        now = _now()
+        self._execute(
+            """INSERT INTO blackboard (challenge_id, kind, key, payload, status,
+                                       confidence, source, created_at, updated_at)
+               VALUES (?, 'fact', ?, ?, 'confirmed', ?, ?, ?, ?)
+               ON CONFLICT(challenge_id, kind, key) DO UPDATE SET
+                 payload=excluded.payload, confidence=excluded.confidence,
+                 source=excluded.source, updated_at=excluded.updated_at""",
+            (challenge_id, key, self._j(payload), confidence, source, now, now),
+        )
+
+    def add_intent(self, challenge_id: str, key: str, payload: dict,
+                   priority: float = 0.5, source: str = "") -> bool:
+        """新 Intent 入黑板；同 (challenge, key) 已存在则忽略。"""
+        now = _now()
+        cur = self._execute(
+            """INSERT OR IGNORE INTO blackboard (challenge_id, kind, key, payload, status,
+                                                  confidence, source, created_at, updated_at)
+               VALUES (?, 'intent', ?, ?, 'open', ?, ?, ?, ?)""",
+            (challenge_id, key, self._j(payload), priority, source, now, now),
+        )
+        return cur.rowcount == 1
+
+    def _board_rows(self, challenge_id: str, kind: str,
+                    status: str | None = None) -> list[dict]:
+        if status:
+            rows = self._query(
+                "SELECT * FROM blackboard WHERE challenge_id=? AND kind=? AND status=?",
+                (challenge_id, kind, status),
+            )
+        else:
+            rows = self._query(
+                "SELECT * FROM blackboard WHERE challenge_id=? AND kind=?",
+                (challenge_id, kind),
+            )
+        out = []
+        for r in rows:
+            d = dict(r)
+            d["payload"] = self._u(d.get("payload", "{}"))
+            out.append(d)
+        return out
+
+    def list_facts(self, challenge_id: str) -> list[dict]:
+        rows = self._board_rows(challenge_id, "fact")
+        rows.sort(key=lambda r: -r["confidence"])
+        return rows
+
+    def list_intents(self, challenge_id: str, status: str | None = None) -> list[dict]:
+        rows = self._board_rows(challenge_id, "intent", status)
+        rows.sort(key=lambda r: -r["confidence"])
+        return rows
+
+    def claim_next_intent(self, challenge_id: str,
+                          lease_seconds: int = 300) -> Optional[dict]:
+        """CAS 领取最高优先级 Intent：open → claimed，返回 None 表示无待办。
+
+        租约过期回收（Cairn expire_workers 语义）：claimed 且 lease_expires
+        已过的 Intent 先自动回 open，崩溃残留的方向可被再次领取。
+        """
+        now = _now()
+        self._execute(
+            "UPDATE blackboard SET status='open', lease_expires=NULL, updated_at=? "
+            "WHERE kind='intent' AND status='claimed' AND lease_expires IS NOT NULL "
+            "AND lease_expires < ?",
+            (now, now),
+        )
+        rows = self._query(
+            "SELECT id FROM blackboard WHERE challenge_id=? AND kind='intent' "
+            "AND status='open' ORDER BY confidence DESC, id ASC LIMIT 1",
+            (challenge_id,),
+        )
+        if not rows:
+            return None
+        intent_id = rows[0]["id"]
+        cur = self._execute(
+            "UPDATE blackboard SET status='claimed', lease_expires=?, updated_at=? "
+            "WHERE id=? AND status='open'",
+            (now + lease_seconds, now, intent_id),
+        )
+        if cur.rowcount != 1:
+            return None
+        row = self._row("SELECT * FROM blackboard WHERE id=?", (intent_id,))
+        d = dict(row)
+        d["payload"] = self._u(d.get("payload", "{}"))
+        return d
+
+    def resolve_intent(self, intent_id: int, status: str,
+                       result: dict | None = None) -> None:
+        now = _now()
+        row = self._row("SELECT payload FROM blackboard WHERE id=?", (intent_id,))
+        payload = self._u(row["payload"]) if row else {}
+        if result:
+            payload = {**payload, "result": result}
+        self._execute(
+            "UPDATE blackboard SET status=?, payload=?, lease_expires=NULL, "
+            "updated_at=? WHERE id=?",
+            (status, self._j(payload), now, intent_id),
+        )
+
+    # ---------- challenge 状态机 ----------
+    def get_challenge_state(self, challenge_id: str) -> str:
+        row = self._row(
+            "SELECT state FROM challenge_states WHERE challenge_id=?", (challenge_id,))
+        return row["state"] if row else "idle"
+
+    def set_challenge_state(self, challenge_id: str, state: str,
+                            expect: str | None = None) -> bool:
+        """写状态；expect 非空时 CAS（并发下防止旧状态覆盖新状态）。"""
+        now = _now()
+        if expect is None:
+            self._execute(
+                """INSERT INTO challenge_states (challenge_id, state, updated_at)
+                   VALUES (?,?,?) ON CONFLICT(challenge_id) DO UPDATE SET
+                   state=excluded.state, updated_at=excluded.updated_at""",
+                (challenge_id, state, now),
+            )
+            return True
+        cur = self._execute(
+            "UPDATE challenge_states SET state=?, updated_at=? "
+            "WHERE challenge_id=? AND state=?",
+            (state, now, challenge_id, expect),
+        )
+        if cur.rowcount == 0:
+            # 行不存在且期望 idle → 插入
+            if expect == "idle":
+                self._execute(
+                    """INSERT OR IGNORE INTO challenge_states (challenge_id, state, updated_at)
+                       VALUES (?,?,?)""",
+                    (challenge_id, state, now),
+                )
+                return True
+            return False
+        return True
+
     # ---------- events ----------
     def event(self, event_type: str, ref_type: str = "", ref_id: str = "",
               payload: dict | None = None) -> None:
@@ -400,6 +567,19 @@ class StateDB:
             "INSERT INTO events (ref_type, ref_id, event_type, payload, ts) VALUES (?,?,?,?,?)",
             (ref_type, ref_id, event_type, self._j(payload or {}), _now()),
         )
+
+    def list_events_after(self, after_id: int, limit: int = 200) -> list[dict]:
+        """增量拉取事件（SSE 轮询用）。"""
+        rows = self._query(
+            "SELECT * FROM events WHERE id > ? ORDER BY id ASC LIMIT ?",
+            (after_id, limit),
+        )
+        out = []
+        for r in rows:
+            d = dict(r)
+            d["payload"] = self._u(d.get("payload", "{}"))
+            out.append(d)
+        return out
 
     def list_events(self, limit: int = 200, event_type: str | None = None) -> list[dict]:
         if event_type:

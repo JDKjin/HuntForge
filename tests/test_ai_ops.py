@@ -1,15 +1,10 @@
 """AI 应用安全 agent 测试（提示词注入打 mock AI 靶场）。"""
 import pytest
 
-from huntforge.bench.mock_server import FLAGS, MockBench, TARGET_PORTS
+from huntforge.bench.mock_server import FLAGS, TARGET_PORTS
+TP = {k: v + 100 for k, v in TARGET_PORTS.items()}
 
 
-@pytest.fixture(scope="module")
-def mb():
-    m = MockBench()
-    m.start()
-    yield m
-    m.stop()
 
 
 def _run(db, cid, target):
@@ -24,7 +19,7 @@ def _run(db, cid, target):
 
 
 def test_prompt_injection_finds_flag(db, mb):
-    r, submitted = _run(db, "ai-demo", f"http://127.0.0.1:{TARGET_PORTS['ai']}")
+    r, submitted = _run(db, "ai-demo", f"http://127.0.0.1:{TP['ai']}")
     assert r["outcome"] == "flag_found"
     assert r["requests"] <= 3  # 命中即停，不浪费
     assert submitted and submitted[0][1] == FLAGS["ai-demo"]

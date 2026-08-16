@@ -19,6 +19,7 @@ from ..core.state import StateDB
 from ..knowledge import ALL_TECHNIQUES, CATEGORY_LABELS
 from ..web.common import FLAG_RE, extract_flag
 from ..web.gate import evaluate_and_persist
+from ..web.sse import emit_event
 
 log = logging.getLogger("huntforge.aiops")
 
@@ -31,8 +32,10 @@ LEAK_MARKS = {
     "secret": "密钥泄露线索", "private key": "私钥泄露线索",
     "os.environ": "环境变量内容泄露", "token=": "token 泄露线索",
 }
-REFUSED_MARKS = ("抱歉", "不能", "无法", "拒绝", "i cannot", "i'm sorry", "not allowed",
-                 "cannot assist", "isn't allowed")
+REFUSED_MARKS = ("抱歉", "不能", "无法", "拒绝", "禁止", "不允许", "不予",
+                 "无法提供", "不支持", "i cannot", "i can't", "i'm sorry",
+                 "i am sorry", "sorry", "cannot assist", "can't assist",
+                 "unable to", "isn't allowed", "not allowed", "not permitted")
 
 CATEGORY_ORDER = ["prompt_injection", "rag_poisoning", "tool_abuse",
                   "api_security", "logic_bypass"]
@@ -89,7 +92,7 @@ class AIOpsAgent:
 
         # 知识库遍历作补充（已命中 flag 则跳过）
         if not any(h.get("value") for h in hits):
-            hits += self._rule_driven_attack(endpoint)
+            hits += self._rule_driven_attack(endpoint, challenge_id=ch["id"])
 
         n_verified, n_flag = self._persist(ch, task["id"], hits)
         return {
@@ -134,6 +137,7 @@ class AIOpsAgent:
             strategy = self.planner.generate_ai_payloads(
                 recon_log, max_payloads=LLM_PAYLOADS_PER_ROUND,
                 prev_attempts=prev_attempts,
+                conv_key=f"{ch['id']}:ai",
             )
             payloads = strategy.get("payloads") or []
             defense = strategy.get("defense_mechanism", defense)
@@ -148,7 +152,7 @@ class AIOpsAgent:
                 if got_flag or self._requests >= self.max_requests or self._time_left() <= 0:
                     break
                 self._requests += 1
-                hit = self._probe(endpoint, payload)
+                hit = self._probe(endpoint, payload, challenge_id=ch["id"])
                 if hit:
                     hit["strategy"] = "llm_generated"
                     hits.append(hit)
@@ -173,7 +177,7 @@ class AIOpsAgent:
         return hits
 
     # ---------- 规则驱动（fallback） ----------
-    def _rule_driven_attack(self, endpoint) -> list:
+    def _rule_driven_attack(self, endpoint, challenge_id: Optional[str] = None) -> list:
         hits = []
         got_flag = False
         for cat in CATEGORY_ORDER:
@@ -186,7 +190,7 @@ class AIOpsAgent:
                     if self._requests >= self.max_requests:
                         break
                     self._requests += 1
-                    hit = self._probe(endpoint, payload)
+                    hit = self._probe(endpoint, payload, challenge_id=challenge_id)
                     if hit:
                         hit["category"] = cat
                         hits.append(hit)
@@ -248,9 +252,19 @@ class AIOpsAgent:
             return None
         return self._extract_reply(r) if r else None
 
-    def _probe(self, endpoint, payload: str) -> Optional[dict]:
-        """发送探测，分析命中结果。"""
+    def _probe(self, endpoint, payload: str, challenge_id: Optional[str] = None) -> Optional[dict]:
+        """发送探测，分析命中结果。每次真实对话请求都发一条 SSE 事件。"""
+        started = time.time()
         text = self._probe_raw(endpoint, payload)
+        ms = (time.time() - started) * 1000
+        if challenge_id:
+            emit_event(self.db, "ai.probe", "challenge", challenge_id,
+                       tool=f"ai-chat:{endpoint[0].rstrip('/').split('/')[-1] or 'chat'}",
+                       agent_id="ai-ops",
+                       params={"payload": payload[:120]},
+                       result={"reply_len": len(text or ""),
+                               "reply_head": (text or "")[:120]},
+                       duration_ms=ms)
         if text is None:
             return None
         flag = extract_flag(text)
@@ -298,7 +312,8 @@ class AIOpsAgent:
                 continue
             seen.add(key)
             evidence = {**h, "url": ch.get("target", ""),
-                        "request": f"POST 对话接口 prompt={h.get('payload','')[:80]}"}
+                        "request": f"POST 对话接口 prompt={h.get('payload','')[:80]}",
+                        "source": h.get("strategy") or f"rule:{h.get('category', 'ai')}"}
             fid = self.db.add_finding(
                 ch["id"], task_id, h["type"], h["confidence"],
                 {k: v for k, v in evidence.items() if k != "value"},

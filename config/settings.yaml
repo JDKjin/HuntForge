@@ -3,6 +3,8 @@
 # 本地模式（mock）下可留空，程序自动回退到内置 mock 平台。
 
 platform:
+  # 平台地址与 token：实盘配置放项目根 .env（BENCHMARK_BASE_URL / BENCHMARK_TOKEN），
+  # 仅 --live 模式加载（见 main.py _load_dotenv）；本地 mock 不受影响。
   # 接口路径（拿到比赛 API 文档后按需修改）
   list_challenges_path: /api/v1/assets
   submit_path: /api/v1/flag/collect

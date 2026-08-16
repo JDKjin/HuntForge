@@ -130,9 +130,129 @@ def test_call_budget_exhausted(monkeypatch):
         gw.chat([{"role": "user", "content": "hi"}], tier="fast")
 
 
+def test_chat_conv_appends_history(monkeypatch):
+    """超高缓存框架：同 conv_key 消息序列只追加（system 稳定 + 历史轮次缓存）。"""
+    from huntforge.llm.gateway import ModelGateway
+
+    monkeypatch.setenv("K1", "sk-1")
+    gw = ModelGateway({
+        "gateway": {"enabled": False},
+        "tiers": {"fast": [{"id": "m-fast", "base_url": "http://x", "api_key_env": "K1"}]},
+        "chat": {"timeout": 1},
+    })
+    calls = {"n": 0}
+
+    class Resp:
+        status_code = 200
+
+        def __init__(self, content):
+            self._c = content
+
+        def json(self):
+            return {"choices": [{"message": {"content": self._c}}],
+                    "usage": {"prompt_tokens": 1, "completion_tokens": 1}}
+
+    def fake_post(url, *a, **k):
+        calls["n"] += 1
+        return Resp('{"step": %d}' % calls["n"])
+
+    monkeypatch.setattr("huntforge.llm.gateway.requests.post", fake_post)
+    out1 = gw.chat_json_conv("k1", "SYS", "delta1", tier="fast")
+    assert out1 == {"step": 1}
+    assert gw.conv_len("k1") == 3      # system + user + assistant
+    out2 = gw.chat_json_conv("k1", "SYS", "delta2", tier="fast")
+    assert out2 == {"step": 2}
+    assert gw.conv_len("k1") == 5      # 追加 user + assistant
+    # system 变化 → 重建会话（防串话）
+    gw.chat_json_conv("k1", "SYS2", "delta3", tier="fast")
+    assert gw.conv_len("k1") == 3
+
+
+def test_dedup_short_circuits_api(monkeypatch):
+    """完全相同的请求直接短路：零 API 调用、零计费。"""
+    from huntforge.llm.gateway import ModelGateway
+
+    monkeypatch.setenv("K1", "sk-1")
+    gw = ModelGateway({
+        "gateway": {"enabled": False},
+        "tiers": {"fast": [{"id": "m-fast", "base_url": "http://x", "api_key_env": "K1"}]},
+        "chat": {"timeout": 1},
+    })
+    calls = {"n": 0}
+
+    class Resp:
+        status_code = 200
+
+        def json(self):
+            return {"choices": [{"message": {"content": '{"ok": true}'}}],
+                    "usage": {"prompt_tokens": 1, "completion_tokens": 1}}
+
+    def fake_post(url, *a, **k):
+        calls["n"] += 1
+        return Resp()
+
+    monkeypatch.setattr("huntforge.llm.gateway.requests.post", fake_post)
+    assert gw.chat_json([{"role": "user", "content": "hi"}], tier="fast") == {"ok": True}
+    assert calls["n"] == 1
+    assert gw.chat_json([{"role": "user", "content": "hi"}], tier="fast") == {"ok": True}
+    assert calls["n"] == 1            # 第二次走本地缓存，未打 API
+
+
 def test_extract_json():
     from huntforge.llm.gateway import _extract_json
     assert _extract_json('{"a": 1}') == {"a": 1}
     assert _extract_json('```json\n{"a": {"b": 2}}\n```') == {"a": {"b": 2}}
     with pytest.raises(Exception):
         _extract_json("no json here")
+
+
+def test_extract_json_repairs_truncated():
+    """实盘高频失败：输出被 max_tokens 截断 → 应补全解析而不是整链降级。"""
+    from huntforge.llm.gateway import _extract_json
+    # 字符串值被截断
+    out = _extract_json('{"next_action": "script", "path": "/", "script": "import os')
+    assert out["next_action"] == "script"
+    assert out["path"] == "/"
+    # 嵌套括号未闭合
+    out2 = _extract_json('{"a": 1, "b": {"c": [1, 2')
+    assert out2 == {"a": 1, "b": {"c": [1, 2]}}
+    # 最后一个字符串未闭合
+    assert _extract_json('{"x": "y"') == {"x": "y"}
+    # 完整对象后跟垃圾文本仍能取到
+    assert _extract_json('{"ok": true} trailing junk') == {"ok": True}
+
+
+def test_chat_json_retries_on_unparseable_output(monkeypatch, db):
+    """首轮输出不含 JSON → 带修复指令翻倍预算重试一次。"""
+    from huntforge.llm.gateway import ModelGateway
+
+    monkeypatch.setenv("K1", "sk-1")
+    gw = ModelGateway({
+        "gateway": {"enabled": False},
+        "tiers": {"fast": [{"id": "m-fast", "base_url": "http://x", "api_key_env": "K1"}]},
+        "chat": {"timeout": 1},
+    }, db=db)
+
+    calls = {"n": 0}
+
+    class Resp:
+        status_code = 200
+
+        def __init__(self, content):
+            self._content = content
+
+        def json(self):
+            return {
+                "choices": [{"message": {"content": self._content}}],
+                "usage": {"prompt_tokens": 1, "completion_tokens": 1},
+            }
+
+    def fake_post(url, *a, **k):
+        calls["n"] += 1
+        return Resp("抱歉，无法处理" if calls["n"] == 1 else '{"ok": true}')
+
+    monkeypatch.setattr("huntforge.llm.gateway.requests.post", fake_post)
+    out = gw.chat_json([{"role": "user", "content": "hi"}], tier="fast")
+    assert out == {"ok": True}
+    assert calls["n"] == 2
+    assert db.usage_summary()["calls"] == 2  # 重试消耗也入账

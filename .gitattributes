@@ -1,0 +1,19 @@
+# 换行与文本规范化
+* text=auto
+
+# 脚本与配置强制 LF（容器内 bash/python 执行）
+*.sh text eol=lf
+*.py text eol=lf
+*.yaml text eol=lf
+*.yml text eol=lf
+*.json text eol=lf
+*.md text eol=lf
+Dockerfile text eol=lf
+.dockerignore text eol=lf
+
+# 二进制资源不做换行转换
+*.png binary
+*.jpg binary
+*.gz binary
+*.zip binary
+*.tar binary

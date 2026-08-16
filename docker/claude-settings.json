@@ -1,0 +1,39 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash",
+      "Read",
+      "Write",
+      "Edit",
+      "Glob",
+      "Grep",
+      "Task",
+      "TodoWrite",
+      "mcp__huntforge__tcp_probe",
+      "mcp__huntforge__telnet_login",
+      "mcp__huntforge__kali_katana",
+      "mcp__huntforge__kali_ffuf_dirs",
+      "mcp__huntforge__kali_nuclei_tech",
+      "mcp__huntforge__kali_nuclei_low",
+      "mcp__huntforge__kali_sqlmap_check",
+      "mcp__huntforge__kali_dirsearch",
+      "mcp__huntforge__kali_nmap_top",
+      "mcp__huntforge__kali_httpx_probe",
+      "mcp__huntforge__kali_r2_info",
+      "mcp__huntforge__kali_r2_flags",
+      "mcp__huntforge__kali_checksec",
+      "mcp__huntforge__gen_jwt_forge",
+      "mcp__huntforge__gen_deser",
+      "mcp__huntforge__gen_pickle",
+      "mcp__huntforge__gen_raw_http",
+      "mcp__huntforge__poc_shiro",
+      "mcp__huntforge__poc_springboot",
+      "mcp__huntforge__poc_seeyon",
+      "mcp__huntforge__poc_weaver_sqli"
+    ]
+  },
+  "enableAllProjectMcpServers": true,
+  "enabledMcpjsonServers": ["huntforge"],
+  "cleanupPeriodDays": 0,
+  "includeCoAuthoredBy": false
+}

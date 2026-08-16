@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "huntforge": {
+      "command": "python",
+      "args": [
+        "scripts/mcp_server.py"
+      ],
+      "cwd": "."
+    }
+  }
+}

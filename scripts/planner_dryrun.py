@@ -58,7 +58,9 @@ def main() -> int:
 
     cfg = load()
     db = StateDB(os.path.join(tempfile.mkdtemp(), "dryrun.db"))
-    gw = ModelGateway(cfg.llm, db=db)
+    # 合并 settings.yaml 的 llm 段（预算等）与 llm.yaml，与主流程一致
+    llm_cfg = {**(cfg.data.get("llm") or {}), **(cfg.llm or {})}
+    gw = ModelGateway(llm_cfg, db=db)
     if not gw.supports("fast"):
         print("无可用模型 tier，检查 llm.yaml / 环境变量")
         return 1

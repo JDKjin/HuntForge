@@ -10,34 +10,43 @@ gateway:
   suffix: .tsecbench.gw
   force_http: true
 
-# 模型按 tier 路由：recon/枚举用 fast；漏洞验证/分析用 standard；链推演/逆向用 deep。
-# 每个 tier 首个模型为主，后续为 failover 备用。
+# 模型路由（用户指定，最后一场调整）：全部 tier 统一
+# deepseek-v4-flash + MAX 推理模式（reasoning_effort=max）。
 tiers:
   fast:
     - id: deepseek-v4-flash
       base_url: https://api.deepseek.com/v1
       api_key_env: DEEPSEEK_API_KEY
-    - id: glm-4-flash
-      base_url: https://open.bigmodel.cn/api/paas/v4
-      api_key_env: ZHIPU_API_KEY
   standard:
     - id: deepseek-v4-flash
       base_url: https://api.deepseek.com/v1
       api_key_env: DEEPSEEK_API_KEY
-    - id: glm-4-flash
-      base_url: https://open.bigmodel.cn/api/paas/v4
-      api_key_env: ZHIPU_API_KEY
   deep:
     - id: deepseek-v4-flash
       base_url: https://api.deepseek.com/v1
       api_key_env: DEEPSEEK_API_KEY
-    - id: glm-4-plus
-      base_url: https://open.bigmodel.cn/api/paas/v4
-      api_key_env: ZHIPU_API_KEY
 
-# 单次调用参数（deepseek-v4-flash 是推理模型，reasoning 会消耗输出预算，
-# max_tokens 给足；空 content 时网关还会翻倍重试）
+# 单次调用参数（deepseek 推理模型支持 reasoning_effort=low/medium/high/max，
+# 推理消耗输出预算，max_tokens 给够；空 content 时网关翻倍重试）
 chat:
   temperature: 0.2
   max_tokens: 4096
-  timeout: 60
+  timeout: 120
+  # MAX 最大推理模式（用户指定）
+  reasoning_effort: max
+
+# 各 tier 覆盖：全部 max
+tier_chat:
+  fast:
+    reasoning_effort: max
+  standard:
+    reasoning_effort: max
+  deep:
+    reasoning_effort: max
+
+# 各 tier 输出预算（MAX 推理模式吃输出预算：推理 + 内容都给足，避免
+# 空 content 触发网关翻倍重试）
+tier_max_tokens:
+  fast: 8192
+  standard: 8192
+  deep: 8192

@@ -172,7 +172,8 @@ class BlockchainOpsAgent:
         for c in candidates:
             fid = self.db.add_finding(
                 ch["id"], task_id, c["type"], c["confidence"],
-                {k: v for k, v in c.items() if k != "value"},
+                {**{k: v for k, v in c.items() if k != "value"},
+                 "source": c.get("type", "chain-ops")},
             )
             result = evaluate_and_persist(self.db, fid, {**c, "url": ch.get("target", "")})
             if result.passed:

@@ -72,6 +72,20 @@ def test_rejected_not_retried(db):
     assert len(bench.calls) == 1
 
 
+def test_rejected_writes_disproven_lesson(db):
+    """D0Pagent disproven_hypotheses 语义：被平台拒绝的 flag 值写入 lessons 反证。"""
+    _mk_ch(db)
+    bench = FakeBench()
+    bench._results = [type("R", (), {"ok": False, "status": "rejected", "error": ""})()]
+    mgr = _mk(db, bench)
+    mgr.queue("c1", "flag{wrong-answer}")
+    mgr.flush()
+    lessons = db.get_memory("lesson")
+    assert lessons, "被拒后应写入反证教训"
+    assert lessons[0]["value"].get("disproven") is True
+    assert "flag{wrong-answer" in lessons[0]["value"]["summary"]
+
+
 def test_cooldown_gating(db, monkeypatch):
     import time as _t
     _mk_ch(db)

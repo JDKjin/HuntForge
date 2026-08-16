@@ -15,6 +15,7 @@ import logging
 import os
 import sys
 import time
+from typing import Optional
 
 from .agents.ai_ops import AIOpsAgent
 from .agents.probe import ProbeAgent
@@ -29,12 +30,47 @@ from .core.state import StateDB
 log = logging.getLogger("huntforge")
 
 
-def _make_planner(cfg, db: StateDB):
-    """从配置创建 PentestPlanner，LLM 不可用时返回 None。"""
+def _load_dotenv(path: str | None = None) -> None:
+    """加载项目根 .env（KEY=VALUE 行，无依赖实现）。
+
+    只 setdefault：已存在的环境变量（平台注入/手动导出）优先，不会被覆盖。
+    仅在 --live / driver 分支调用，保证 mock 评测始终走内置平台。
+    HUNTFORGE_NO_DOTENV=1 时完全跳过（测试隔离：防止真实 .env 泄漏进
+    测试进程污染 mock 模式）。
+    """
+    from pathlib import Path
+    if os.environ.get("HUNTFORGE_NO_DOTENV") == "1":
+        return
+    p = Path(path) if path else Path(__file__).resolve().parents[1] / ".env"
+    if not p.is_file():
+        return
+    for line in p.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, val = line.partition("=")
+        key = key.strip()
+        if key and key not in os.environ:
+            os.environ[key] = val.strip()
+
+
+def _llm_config(cfg) -> dict:
+    """合并 settings.yaml 的 llm 段（含 per_challenge_call_budget）与 llm.yaml。"""
+    merged = dict(cfg.data.get("llm") or {})
+    merged.update(cfg.llm or {})
+    return merged
+
+
+def _make_planner(cfg, db: StateDB, task_id: Optional[int] = None):
+    """从配置创建 PentestPlanner，LLM 不可用时返回 None。
+
+    task_id 精确归属 model_usage——并发 worker 共享 gateway 会串号，
+    因此每个任务创建独立 planner/gateway（构造开销仅为读环境变量）。
+    """
     try:
         from .llm.gateway import ModelGateway
         from .llm.planner import PentestPlanner
-        gw = ModelGateway(cfg.llm, db=db)
+        gw = ModelGateway(_llm_config(cfg), db=db, task_id=task_id)
         # 检查是否有可用模型（至少一个 tier 有 key）
         if gw.supports("fast"):
             return PentestPlanner(gw)
@@ -60,20 +96,22 @@ AGENT_TYPES = {a for stages in CATEGORY_STAGES.values() for a in stages}
 
 
 def make_handler(db: StateDB, cfg, submissions: SubmissionManager):
-    """task.agent_type → 执行体。planner 传给所有 agent。"""
+    """task.agent_type → 执行体。planner 按任务独立创建（usage 精确归属）。"""
     agent_cfg = cfg.agent
     submitter = lambda cid, v: submissions.queue(cid, v)  # noqa: E731
-    planner = _make_planner(cfg, db)
-    if planner:
+    planner_available = False
+    probe = None
+    try:
+        probe = _make_planner(cfg, db)
+        planner_available = probe is not None
+    except Exception as exc:  # noqa: BLE001 - 探测失败不影响规则链路
+        log.info("planner probe failed: %s", exc)
+    if planner_available:
         log.info("LLM planner enabled (tier=fast available)")
-    else:
-        log.info("LLM planner unavailable — rules-only mode")
 
     def handler(task: dict) -> dict:
-        if planner is not None:
-            # 任务级 usage 计量（尽力而为：并发 worker 共享 gateway 时可能串号，
-            # 精确归属需把 task_id 穿透到每次 planner 调用）
-            planner.gw.task_id = task.get("id")
+        # 每任务独立 planner：task_id 精确落到 model_usage（并发 worker 不串号）
+        planner = _make_planner(cfg, db, task_id=task.get("id")) if planner_available else None
         agent_type = task["agent_type"]
         timeout = float(agent_cfg.get("timeout_seconds", 600))
         http_t = float(agent_cfg.get("http_timeout", 10))
@@ -87,6 +125,8 @@ def make_handler(db: StateDB, cfg, submissions: SubmissionManager):
             return WebOpsAgent(
                 db, http_timeout=http_t, timebox=timeout,
                 submitter=submitter, planner=planner,
+                # 实盘教训：规则检查设独立时间上限，防吃光预算饿死 LLM 循环
+                rules_max_seconds=timeout * 0.45,
             ).run(task)
         if agent_type == "ai-ops":
             return AIOpsAgent(
@@ -287,13 +327,17 @@ def main(argv: list[str] | None = None) -> int:
         cfg.llm.setdefault("gateway", {})["enabled"] = True
 
     if args.live:
-        base = os.environ.get("BENCHMARK_BASE_URL", "")
-        token = os.environ.get("BENCHMARK_TOKEN", "")
+        _load_dotenv()   # 实盘配置（.env）：仅在 live 模式加载，mock 不受影响
+        # 平台地址/token：环境变量/.env 优先，其次 config/settings.yaml platform 段
+        base = (os.environ.get("BENCHMARK_BASE_URL", "") or "").rstrip("/") \
+            or (cfg.bench_base_url or "")
+        token = os.environ.get("BENCHMARK_TOKEN", "") or cfg.bench_token or ""
         if not base or not token:
-            print("--live 模式需要环境变量 BENCHMARK_BASE_URL / BENCHMARK_TOKEN")
+            print("--live 模式需要 BENCHMARK_BASE_URL / BENCHMARK_TOKEN"
+                  "（环境变量或 config/settings.yaml 的 platform 段）")
             return 1
         from .bench.live_runner import LiveRunner
-        runner = LiveRunner(base, token, llm_cfg=cfg.llm)
+        runner = LiveRunner(base, token, llm_cfg=_llm_config(cfg))
         summary = runner.run(max_total_time=args.max_time or None)
         print("LIVE_SUMMARY " + json.dumps(summary, ensure_ascii=False))
         return 0

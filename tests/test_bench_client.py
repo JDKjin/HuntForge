@@ -2,19 +2,11 @@
 import pytest
 
 from huntforge.bench.client import BenchClient, Challenge, _classify_submit
-from huntforge.bench.mock_server import FLAGS, MockBench
+from huntforge.bench.mock_server import FLAGS
 
 
-@pytest.fixture(scope="module")
-def mock_bench():
-    mb = MockBench()
-    mb.start()
-    yield mb
-    mb.stop()
-
-
-def test_list_challenges_and_submit(mock_bench):
-    client = BenchClient(mock_bench.base_url, None)
+def test_list_challenges_and_submit(mb):
+    client = BenchClient(mb.base_url, None)
     challenges = client.list_challenges()
     assert {c.id for c in challenges} == {"unauth-demo", "sqli-demo", "lfi-demo",
                                           "leak-demo", "ai-demo", "binary-demo",

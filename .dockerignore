@@ -1,0 +1,28 @@
+# 构建上下文排除：敏感配置/一次性脚本/测试与本地产物一律不进镜像
+# 注意：.dockerignore 不支持行尾注释，注释必须独占一行
+.git
+.gitignore
+.env
+.env.local
+
+# 运行时产物与状态（不入镜像）
+.huntforge
+artifacts
+scratch
+
+# 本地开发与文档
+data
+dist
+docs
+tests
+.pytest_cache
+**/__pycache__
+*.pyc
+live_run.log
+live_run.err.log
+tmp
+frontend
+*.tar.gz
+*.zip
+!.jadx.zip
+Dockerfile

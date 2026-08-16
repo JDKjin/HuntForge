@@ -1,9 +1,28 @@
 # 运行数据与本地生成物
+# 注意：gitignore 不支持行内注释，注释必须独占一行
 data/
 dist/
 *.db
 *.db-wal
 *.db-shm
+*.zip
+*.log
+live_run.log
+live_run.err.log
+tmp-research-*/
+.huntforge/
+scratch/
+artifacts/
+artifacts-demo/
+docker_build*.log
+claude_smoke*.log
+bash.exe.stackdump
+
+# 构建注入包与镜像产物（不入库）
+.upx.tar.xz
+.jadx.zip
+*.tar
+*.tar.gz
 
 # Python
 __pycache__/

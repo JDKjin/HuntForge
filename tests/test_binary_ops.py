@@ -1,20 +1,15 @@
 """二进制分析 agent 测试（strings/魔数/危险函数）。"""
 import pytest
+import conftest as _cf
+TP = _cf.TP
 
 from huntforge.bench.mock_server import FLAGS, MockBench
 from huntforge.agents.binary_ops import _extract_strings, _identify_format
 
 
-@pytest.fixture(scope="module")
-def mb():
-    m = MockBench()
-    m.start()
-    yield m
-    m.stop()
-
 
 class FakePlanner:
-    def audit_binary(self, fmt, strings, dangerous):
+    def audit_binary(self, fmt, strings, dangerous, kali_info="", **kwargs):
         """模拟 LLM：识别 XOR 编码线索并"解码"（返回正确 flag）。"""
         if any("KEY=0x41" in s for s in strings):
             return {
@@ -90,7 +85,8 @@ def test_planner_path_decodes_xor_flag(mb):
                            submitter=lambda c, v: submitted.append((c, v)),
                            planner=FakePlanner())
     r = agent.run({"id": 1, "challenge_id": "xor-demo", "agent_type": "binary-ops"})
-    assert r["llm_used"] is True, "规则层无明文 flag，必须走 planner 审计"
+    # XOR 编码 flag 现在会被确定性解密流水线（rev.xor_single）先行命中，
+    # 无需 LLM；LLM 审计是兜底路径
     assert r["outcome"] == "flag_found"
     assert submitted and submitted[0][1] == FLAGS["xor-demo"]
     db.close()
